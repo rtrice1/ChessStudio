@@ -1,0 +1,532 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Pocket Chess Studio</title>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- jQuery (Required for Chessboard.js) -->
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    
+    <!-- Chessboard.js CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.css">
+    
+    <!-- FontAwesome for Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+
+    <style>
+        /* Mobile optimization */
+        body {
+            overscroll-behavior-y: contain;
+            background-color: #1a202c; /* Tailwind gray-900 */
+            color: #e2e8f0; /* Tailwind gray-200 */
+        }
+        
+        .scroller::-webkit-scrollbar {
+            width: 4px;
+        }
+        .scroller::-webkit-scrollbar-thumb {
+            background-color: #4a5568;
+            border-radius: 4px;
+        }
+
+        .highlight-white { box-shadow: inset 0 0 3px 3px yellow; }
+        .highlight-black { box-shadow: inset 0 0 3px 3px blue; }
+        
+        .no-select {
+            user-select: none;
+            -webkit-user-select: none;
+        }
+
+        /* Toast Notification */
+        .toast-visible {
+            opacity: 1 !important;
+            transform: translate(-50%, 0) !important;
+        }
+    </style>
+</head>
+<body class="h-[100dvh] flex flex-col font-sans no-select relative overflow-hidden">
+
+    <!-- Toast Notification -->
+    <div id="toast" class="fixed bottom-10 left-1/2 transform -translate-x-1/2 translate-y-10 bg-gray-800 text-white px-6 py-3 rounded-full shadow-2xl transition-all duration-300 opacity-0 pointer-events-none z-[70] text-sm font-bold border border-gray-600 flex items-center">
+        <i class="fas fa-info-circle mr-2 text-blue-400"></i> <span id="toastMsg">Notification</span>
+    </div>
+
+    <!-- SAVE GAME MODAL (New) -->
+    <div id="saveModal" class="hidden absolute inset-0 bg-black bg-opacity-80 z-[60] flex items-center justify-center p-4 backdrop-blur-sm">
+        <div class="bg-gray-800 w-full max-w-sm rounded-xl shadow-2xl border border-gray-700 p-5 transform transition-all scale-100">
+            <h2 class="text-xl font-bold text-white mb-1">Save Game</h2>
+            <p class="text-gray-400 text-sm mb-4">Give this position a name to find it later.</p>
+            
+            <input type="text" id="modalSaveName" placeholder="e.g. 'Sicilian Defense Variation'" 
+                   class="w-full bg-gray-900 text-white border border-gray-600 rounded-lg px-4 py-3 mb-4 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none">
+            
+            <div class="flex gap-3">
+                <button id="cancelSaveBtn" class="flex-1 bg-gray-700 hover:bg-gray-600 text-white py-3 rounded-lg font-semibold transition">
+                    Cancel
+                </button>
+                <button id="confirmSaveBtn" class="flex-1 bg-blue-600 hover:bg-blue-500 text-white py-3 rounded-lg font-bold shadow-lg transition">
+                    Save
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- MAIN MENU (Front Page) -->
+    <div id="mainMenu" class="absolute inset-0 bg-gray-900 z-50 flex flex-col p-4 bg-opacity-100">
+        
+        <!-- Menu Header -->
+        <div class="flex flex-col items-center justify-center pt-8 pb-6">
+            <div class="w-16 h-16 bg-blue-600 rounded-2xl flex items-center justify-center mb-3 shadow-lg shadow-blue-900/50">
+                <i class="fas fa-chess-knight text-3xl text-white"></i>
+            </div>
+            <h1 class="text-3xl font-bold text-white tracking-tight">Chess Studio</h1>
+            <p class="text-gray-400 text-sm">Create, Play, Save.</p>
+        </div>
+
+        <!-- Action Buttons -->
+        <div class="w-full max-w-sm mx-auto flex flex-col gap-3 mb-6">
+            <button id="menuNewGameBtn" class="w-full bg-gradient-to-r from-green-600 to-green-500 hover:from-green-500 hover:to-green-400 text-white font-bold py-4 rounded-xl shadow-lg text-lg transition flex items-center justify-center border border-green-400/20">
+                <i class="fas fa-plus-circle mr-3"></i> New Game
+            </button>
+            
+            <button id="menuResumeBtn" class="w-full bg-gray-800 hover:bg-gray-700 text-blue-400 font-bold py-3 rounded-xl border border-gray-700 text-sm transition hidden flex items-center justify-center">
+                <i class="fas fa-play mr-2"></i> Resume Active Board
+            </button>
+        </div>
+
+        <!-- Saved Games List -->
+        <div class="flex-grow w-full max-w-sm mx-auto flex flex-col min-h-0">
+            <div class="flex justify-between items-end mb-2 px-1">
+                <h3 class="text-gray-300 font-bold text-sm uppercase tracking-wider">Your Games</h3>
+                <span id="menuSaveCount" class="text-xs text-gray-500 font-mono">0 saved</span>
+            </div>
+            
+            <div class="bg-gray-800 rounded-xl border border-gray-700 flex-grow overflow-hidden flex flex-col shadow-inner">
+                <div id="menuSavedGamesList" class="scroller overflow-y-auto p-2 space-y-2 flex-grow">
+                    <!-- Games injected here -->
+                </div>
+            </div>
+            
+            <!-- Quick Load FEN -->
+            <div class="mt-3 pt-3 border-t border-gray-800">
+                 <button id="toggleFenLoad" class="text-xs text-gray-500 hover:text-gray-300 w-full text-center">
+                    Have a FEN string? Paste it here
+                </button>
+                <div id="fenLoadArea" class="hidden mt-2 flex gap-2">
+                    <input type="text" id="menuFenInput" placeholder="Paste FEN..." class="flex-grow bg-gray-900 text-gray-300 border border-gray-700 rounded-lg px-3 py-2 text-xs outline-none">
+                    <button id="menuLoadFenBtn" class="bg-gray-700 text-white px-3 rounded-lg text-xs font-bold">Go</button>
+                </div>
+            </div>
+        </div>
+        
+        <div class="h-6"></div> <!-- Bottom Spacer -->
+    </div>
+
+    <!-- APP HEADER -->
+    <div class="bg-gray-800 p-3 shadow-md flex justify-between items-center z-10 shrink-0 border-b border-gray-700">
+        <button id="openMenuBtn" class="text-gray-400 hover:text-white transition p-2 bg-gray-700 rounded-lg w-10 h-10 flex items-center justify-center">
+            <i class="fas fa-bars text-lg"></i>
+        </button>
+        <h1 class="text-lg font-bold text-white tracking-wider">Board</h1>
+        <button id="toggleModeBtn" class="bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-lg text-xs uppercase font-bold tracking-wide transition shadow">
+            Edit
+        </button>
+    </div>
+
+    <!-- MAIN GAME AREA -->
+    <div class="flex-grow flex flex-col items-center justify-start pt-6 px-4 overflow-y-auto w-full pb-20">
+        
+        <!-- Status -->
+        <div id="status" class="mb-4 text-sm font-mono text-yellow-400 text-center font-bold bg-gray-800/50 py-1 px-3 rounded-full border border-gray-700/50">
+            White to move
+        </div>
+
+        <!-- Board -->
+        <div id="myBoard" class="w-full max-w-[400px] shadow-2xl rounded-lg touch-none mb-6 border-4 border-gray-700"></div>
+
+        <!-- MAIN CONTROLS (Updated) -->
+        <div id="playControls" class="w-full max-w-[400px] grid grid-cols-3 gap-3 mb-6">
+            <button id="undoBtn" class="bg-gray-700 hover:bg-gray-600 text-white py-3 rounded-xl shadow-lg flex flex-col items-center justify-center gap-1 transition">
+                <i class="fas fa-undo text-lg"></i>
+                <span class="text-[10px] uppercase font-bold text-gray-400">Undo</span>
+            </button>
+            <button id="triggerSaveBtn" class="bg-gray-700 hover:bg-gray-600 text-white py-3 rounded-xl shadow-lg flex flex-col items-center justify-center gap-1 transition border border-gray-600">
+                <i class="fas fa-save text-lg text-green-400"></i>
+                <span class="text-[10px] uppercase font-bold text-green-400">Save</span>
+            </button>
+            <button id="flipBtn" class="bg-gray-700 hover:bg-gray-600 text-white py-3 rounded-xl shadow-lg flex flex-col items-center justify-center gap-1 transition">
+                <i class="fas fa-sync-alt text-lg"></i>
+                <span class="text-[10px] uppercase font-bold text-gray-400">Flip</span>
+            </button>
+        </div>
+
+        <!-- EDITOR CONTROLS (Hidden by default) -->
+        <div id="editControls" class="w-full max-w-[400px] grid grid-cols-2 gap-3 mb-6 hidden">
+            <button id="clearBoardBtn" class="bg-red-900/50 hover:bg-red-900 text-red-200 py-3 rounded-xl shadow-lg flex items-center justify-center gap-2 transition border border-red-800">
+                <i class="fas fa-trash-alt"></i> Clear
+            </button>
+            <button id="startPosBtn" class="bg-gray-700 hover:bg-gray-600 text-white py-3 rounded-xl shadow-lg flex items-center justify-center gap-2 transition">
+                <i class="fas fa-chess-board"></i> Reset
+            </button>
+        </div>
+
+        <!-- FEN Display -->
+        <div class="w-full max-w-[400px] bg-gray-800 p-3 rounded-xl flex items-center border border-gray-700 shadow-sm group">
+            <div class="text-[10px] text-gray-500 mr-3 font-bold uppercase">FEN</div>
+            <input type="text" id="fenInput" class="bg-transparent text-xs text-blue-400 w-full outline-none font-mono truncate" readonly value="start">
+            <button id="copyFenBtn" class="text-gray-500 hover:text-white ml-3 p-1"><i class="fas fa-copy"></i></button>
+        </div>
+
+    </div>
+
+    <!-- Chess Logic Libraries -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.10.3/chess.min.js"></script>
+    <script src="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.js"></script>
+
+    <script>
+        // --- State Management ---
+        let board = null;
+        let game = new Chess();
+        let isEditMode = false;
+
+        // --- Utils ---
+        function showToast(msg) {
+            $('#toastMsg').text(msg);
+            $('#toast').addClass('toast-visible');
+            setTimeout(() => {
+                $('#toast').removeClass('toast-visible');
+            }, 2000);
+        }
+        
+        // --- Initialization ---
+        $(document).ready(function() {
+            initBoardPlayMode(); 
+            updateStatus();
+            renderSavedGames();
+            
+            $(window).resize(function() {
+                if(board) board.resize();
+            });
+        });
+
+        // --- UI Interactions ---
+        $('#openMenuBtn').on('click', function() {
+            $('#mainMenu').removeClass('hidden').addClass('flex');
+            if (game.fen() !== 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1') {
+                $('#menuResumeBtn').removeClass('hidden').addClass('flex');
+            }
+        });
+
+        function closeMenu() {
+            $('#mainMenu').addClass('hidden').removeClass('flex');
+        }
+
+        $('#menuResumeBtn').on('click', closeMenu);
+
+        $('#menuNewGameBtn').on('click', function() {
+            initBoardPlayMode('start');
+            closeMenu();
+            showToast("New Game Started");
+        });
+
+        $('#toggleFenLoad').on('click', function() {
+            $(this).hide();
+            $('#fenLoadArea').removeClass('hidden').addClass('flex');
+        });
+
+        $('#menuLoadFenBtn').on('click', function() {
+            const fen = $('#menuFenInput').val().trim();
+            if (fen) {
+                initBoardPlayMode(fen);
+                closeMenu();
+                $('#menuFenInput').val('');
+            } else {
+                showToast("Please enter a FEN string");
+            }
+        });
+
+        // --- Save System w/ Modal ---
+        $('#triggerSaveBtn').on('click', function() {
+            if (isEditMode) {
+                // Warning if saving in edit mode
+                $('#modalSaveName').val("Custom Setup " + new Date().toLocaleTimeString());
+            } else {
+                 $('#modalSaveName').val("");
+            }
+            $('#saveModal').removeClass('hidden');
+            $('#modalSaveName').focus();
+        });
+
+        $('#cancelSaveBtn').on('click', function() {
+            $('#saveModal').addClass('hidden');
+        });
+
+        $('#confirmSaveBtn').on('click', function() {
+            const name = $('#modalSaveName').val().trim();
+            if (!name) {
+                showToast("Please enter a name");
+                return;
+            }
+            
+            let currentFen = '';
+            if (isEditMode) {
+                currentFen = Chessboard.objToFen(board.position()) + " w KQkq - 0 1";
+            } else {
+                currentFen = game.fen();
+            }
+
+            saveGameToStorage(name, currentFen);
+            $('#saveModal').addClass('hidden');
+            showToast("Game Saved Successfully!");
+        });
+
+        // --- Board Logic ---
+        function onDragStart(source, piece, position, orientation) {
+            if (!isEditMode && game.game_over()) return false;
+            if (!isEditMode && (game.turn() === 'w' && piece.search(/^b/) !== -1) ||
+                (game.turn() === 'b' && piece.search(/^w/) !== -1)) {
+                return false;
+            }
+        }
+
+        function onDrop(source, target) {
+            if (isEditMode) return; 
+
+            let move = game.move({
+                from: source,
+                to: target,
+                promotion: 'q' 
+            });
+
+            if (move === null) return 'snapback';
+            updateStatus();
+        }
+
+        function onSnapEnd() {
+            if (!isEditMode) {
+                board.position(game.fen());
+            }
+        }
+
+        function onChange(oldPos, newPos) {
+            const fen = Chessboard.objToFen(newPos);
+            if (isEditMode) {
+                $('#fenInput').val(fen + " w KQkq - 0 1"); 
+            } else {
+                $('#fenInput').val(game.fen());
+            }
+        }
+
+        // --- Mode Switching ---
+        function initBoardPlayMode(startFen = 'start') {
+            isEditMode = false;
+            let loadSuccess = true;
+            if (startFen !== 'start') {
+                loadSuccess = game.load(startFen);
+                if (!loadSuccess) {
+                    try {
+                        game = new Chess(startFen);
+                        loadSuccess = true;
+                    } catch (e) {
+                        showToast("Invalid FEN string");
+                        loadSuccess = false;
+                    }
+                }
+            } else {
+                game.reset();
+            }
+
+            if (!loadSuccess) return;
+
+            const config = {
+                draggable: true,
+                position: startFen === 'start' ? 'start' : game.fen(),
+                onDragStart: onDragStart,
+                onDrop: onDrop,
+                onSnapEnd: onSnapEnd,
+                onChange: onChange,
+                pieceTheme: 'https://chessboardjs.com/img/chesspieces/wikipedia/{piece}.png'
+            };
+
+            if (board) board.destroy();
+            board = Chessboard('myBoard', config);
+            setTimeout(() => { board.resize(); }, 200);
+
+            $('#toggleModeBtn').html('<i class="fas fa-tools mr-1"></i> Edit').removeClass('bg-green-600').addClass('bg-blue-600');
+            $('#playControls').removeClass('hidden').addClass('grid');
+            $('#editControls').addClass('hidden').removeClass('grid');
+            $('#status').removeClass('text-gray-400 bg-gray-800').addClass('text-yellow-400 bg-gray-800/50');
+            updateStatus();
+        }
+
+        function initBoardEditMode() {
+            isEditMode = true;
+            const currentPos = board.position();
+            const config = {
+                draggable: true,
+                position: currentPos,
+                dropOffBoard: 'trash',
+                sparePieces: true,
+                onChange: onChange,
+                pieceTheme: 'https://chessboardjs.com/img/chesspieces/wikipedia/{piece}.png'
+            };
+
+            if (board) board.destroy();
+            board = Chessboard('myBoard', config);
+            setTimeout(() => { board.resize(); }, 200);
+
+            $('#toggleModeBtn').html('<i class="fas fa-play mr-1"></i> Play').removeClass('bg-blue-600').addClass('bg-green-600');
+            $('#playControls').addClass('hidden').removeClass('grid');
+            $('#editControls').removeClass('hidden').addClass('grid');
+            $('#status').text("Editor Mode: Drag pieces").removeClass('text-yellow-400 bg-gray-800/50').addClass('text-gray-400 bg-gray-800');
+        }
+
+        $('#toggleModeBtn').on('click', function() {
+            if (isEditMode) {
+                const pos = board.position();
+                const fen = Chessboard.objToFen(pos);
+                const fullFen = fen + " w KQkq - 0 1"; 
+                initBoardPlayMode(fullFen);
+                showToast("Switching to Play Mode");
+            } else {
+                initBoardEditMode();
+                showToast("Switching to Edit Mode");
+            }
+        });
+
+        // --- Controls ---
+        $('#undoBtn').on('click', function() {
+            if (isEditMode) return;
+            game.undo();
+            board.position(game.fen());
+            updateStatus();
+        });
+
+        $('#flipBtn').on('click', function() {
+            board.flip();
+        });
+
+        $('#clearBoardBtn').on('click', function() {
+            if (!isEditMode) return;
+            board.clear();
+        });
+
+        $('#startPosBtn').on('click', function() {
+            if (!isEditMode) return;
+            board.start();
+        });
+        
+        $('#copyFenBtn').on('click', function() {
+             const fen = $('#fenInput').val();
+             navigator.clipboard.writeText(fen);
+             showToast("FEN copied to clipboard");
+        });
+
+        function updateStatus() {
+            let status = '';
+            let moveColor = 'White';
+            if (game.turn() === 'b') {
+                moveColor = 'Black';
+            }
+            if (game.in_checkmate()) {
+                status = 'Checkmate! ' + moveColor + ' loses.';
+            } else if (game.in_draw()) {
+                status = 'Draw!';
+            } else {
+                status = moveColor + ' to move';
+                if (game.in_check()) {
+                    status += ' (Check)';
+                }
+            }
+            $('#status').text(status);
+            $('#fenInput').val(game.fen());
+        }
+
+        // --- Storage ---
+        const STORAGE_KEY = 'my_chess_games_v1';
+
+        function getSavedGames() {
+            const stored = localStorage.getItem(STORAGE_KEY);
+            return stored ? JSON.parse(stored) : [];
+        }
+
+        function saveGameToStorage(name, fen) {
+            const games = getSavedGames();
+            const newGame = {
+                id: Date.now(),
+                name: name,
+                fen: fen,
+                date: new Date().toLocaleDateString()
+            };
+            games.unshift(newGame);
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(games));
+            renderSavedGames();
+        }
+
+        function deleteGameFromStorage(id) {
+            let games = getSavedGames();
+            games = games.filter(g => g.id !== id);
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(games));
+            renderSavedGames();
+        }
+
+        function renderSavedGames() {
+            const games = getSavedGames();
+            $('#menuSaveCount').text(games.length + " saved");
+            
+            const container = $('#menuSavedGamesList');
+            container.empty();
+
+            if (games.length === 0) {
+                container.html(`
+                    <div class="flex flex-col items-center justify-center py-8 text-gray-500 opacity-50">
+                        <i class="fas fa-ghost text-3xl mb-2"></i>
+                        <span class="text-xs">No saved games yet</span>
+                    </div>
+                `);
+                return;
+            }
+
+            games.forEach(g => {
+                const el = `
+                    <div class="bg-gray-700/50 hover:bg-gray-700 p-3 rounded-xl flex justify-between items-center group transition border border-gray-600/50">
+                        <div class="flex-grow overflow-hidden cursor-pointer load-game-trigger" data-fen="${g.fen}">
+                            <div class="font-bold text-sm text-gray-200 truncate">${g.name}</div>
+                            <div class="text-[10px] text-gray-400 font-mono mt-0.5">${g.date}</div>
+                        </div>
+                        <div class="flex items-center gap-2 pl-2">
+                            <button class="load-game-trigger bg-blue-600 hover:bg-blue-500 text-white text-xs px-3 py-1.5 rounded-lg font-bold shadow-sm" data-fen="${g.fen}">
+                                Load
+                            </button>
+                            <button class="delete-game-trigger text-gray-500 hover:text-red-400 p-2 transition" data-id="${g.id}">
+                                <i class="fas fa-times"></i>
+                            </button>
+                        </div>
+                    </div>
+                `;
+                container.append(el);
+            });
+
+            // Bind events
+            $('.load-game-trigger').on('click', function(e) {
+                if(e.target !== this && !$(this).hasClass('load-game-trigger')) return;
+                const fen = $(this).data('fen');
+                initBoardPlayMode(fen);
+                closeMenu();
+                showToast("Game Loaded");
+            });
+
+            $('.delete-game-trigger').on('click', function() {
+                const id = $(this).data('id');
+                // No confirm dialog for cleaner UI, could add undo toast later
+                deleteGameFromStorage(id);
+                showToast("Game Deleted");
+            });
+        }
+    </script>
+</body>
+</html>
