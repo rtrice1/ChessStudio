@@ -79,6 +79,23 @@
             cursor: not-allowed;
             pointer-events: none;
         }
+
+        /* Click-to-move highlighting */
+        .highlight-selected {
+            box-shadow: inset 0 0 0 4px yellow !important;
+            background-color: rgba(255, 255, 0, 0.4) !important;
+        }
+        .highlight-legal {
+            box-shadow: inset 0 0 0 20px rgba(0, 180, 0, 0.5) !important;
+        }
+        .highlight-capture {
+            box-shadow: inset 0 0 0 6px rgba(0, 180, 0, 0.7) !important;
+            background-color: rgba(255, 0, 0, 0.3) !important;
+        }
+        /* Make piece images pass clicks through to squares underneath */
+        #myBoard .piece-417db {
+            pointer-events: none !important;
+        }
     </style>
 </head>
 <body class="h-[100dvh] flex flex-col font-sans no-select relative overflow-hidden">
@@ -92,12 +109,46 @@
     <div id="saveModal" class="hidden absolute inset-0 bg-black bg-opacity-80 z-[60] flex items-center justify-center p-4 backdrop-blur-sm">
         <div class="bg-gray-800 w-full max-w-sm rounded-xl shadow-2xl border border-gray-700 p-5 transform transition-all scale-100">
             <h2 class="text-xl font-bold text-white mb-1">Save Game</h2>
-            <p class="text-gray-400 text-sm mb-4">Give this position a name to find it later.</p>
-            <input type="text" id="modalSaveName" placeholder="e.g. 'Sicilian Defense Variation'" 
-                   class="w-full bg-gray-900 text-white border border-gray-600 rounded-lg px-4 py-3 mb-4 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none">
+            <p id="saveModalDesc" class="text-gray-400 text-sm mb-4">Give this game a name. Full move history will be saved.</p>
+            <input type="text" id="modalSaveName" placeholder="e.g. 'Sicilian Defense Variation'"
+                   class="w-full bg-gray-900 text-white border border-gray-600 rounded-lg px-4 py-3 mb-3 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none">
+            <!-- Branch option (shown when playing from a saved game) -->
+            <div id="branchOption" class="hidden mb-4">
+                <label class="flex items-center gap-2 text-sm text-gray-300 cursor-pointer">
+                    <input type="checkbox" id="saveAsBranch" class="w-4 h-4 rounded bg-gray-700 border-gray-600 text-purple-500 focus:ring-purple-500">
+                    <span><i class="fas fa-code-branch text-purple-400 mr-1"></i>Save as branch of current game</span>
+                </label>
+            </div>
             <div class="flex gap-3">
                 <button id="cancelSaveBtn" class="flex-1 bg-gray-700 hover:bg-gray-600 text-white py-3 rounded-lg font-semibold transition">Cancel</button>
                 <button id="confirmSaveBtn" class="flex-1 bg-blue-600 hover:bg-blue-500 text-white py-3 rounded-lg font-bold shadow-lg transition">Save</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- SETTINGS MODAL -->
+    <div id="settingsModal" class="hidden absolute inset-0 bg-gray-900 z-[55] flex flex-col p-4 bg-opacity-100">
+        <div class="flex justify-between items-center mb-6 pt-8">
+            <button id="closeSettingsBtn" class="text-gray-400 hover:text-white"><i class="fas fa-arrow-left text-xl"></i></button>
+            <h2 class="text-xl font-bold text-white">Settings</h2>
+            <div class="w-6"></div>
+        </div>
+
+        <div class="scroller overflow-y-auto flex-grow space-y-4 pb-10">
+            <!-- Piece Theme -->
+            <div class="bg-gray-800 p-4 rounded-xl border border-gray-700">
+                <label class="block text-gray-400 text-xs font-bold mb-3 uppercase">Piece Style <span class="text-gray-500 font-normal">(30 sets via Lichess)</span></label>
+                <div id="pieceThemeOptions" class="grid grid-cols-2 gap-2 max-h-64 overflow-y-auto scroller pr-1">
+                    <!-- Populated by JS -->
+                </div>
+            </div>
+
+            <!-- Board Theme -->
+            <div class="bg-gray-800 p-4 rounded-xl border border-gray-700">
+                <label class="block text-gray-400 text-xs font-bold mb-3 uppercase">Board Colors</label>
+                <div id="boardThemeOptions" class="grid grid-cols-2 gap-2 max-h-48 overflow-y-auto scroller pr-1">
+                    <!-- Populated by JS -->
+                </div>
             </div>
         </div>
     </div>
@@ -140,6 +191,9 @@
             </button>
             <button id="menuImportBtn" class="w-full bg-gray-700 hover:bg-gray-600 text-white font-bold py-3 rounded-xl border border-gray-600 text-sm transition flex items-center justify-center">
                 <i class="fas fa-cloud-download-alt mr-2"></i> Import from Chess.com
+            </button>
+            <button id="menuSettingsBtn" class="w-full bg-gray-800 hover:bg-gray-700 text-gray-300 font-bold py-3 rounded-xl border border-gray-700 text-sm transition flex items-center justify-center">
+                <i class="fas fa-cog mr-2"></i> Settings
             </button>
             <button id="menuResumeBtn" class="w-full bg-gray-800 hover:bg-gray-700 text-blue-400 font-bold py-3 rounded-xl border border-gray-700 text-sm transition hidden flex items-center justify-center">
                 <i class="fas fa-play mr-2"></i> Resume Active Board
@@ -255,14 +309,77 @@
         let game = new Chess();
         let isEditMode = false;
         let stockfishWorker = null;
-        let quickSaveFen = null; 
+        let quickSaveFen = null;
         let redoStack = [];
-        let importedPgn = null; 
+        let importedPgn = null;
+        let selectedSquare = null; // For click-to-move
+        let currentGameId = null; // Track which saved game we're playing
 
         // Storage Keys
-        const STORAGE_KEY_SAVES = 'my_chess_games_v1';
+        const STORAGE_KEY_SAVES = 'my_chess_games_v2'; // Updated for new format with history
         const STORAGE_KEY_AUTOSAVE = 'my_chess_autosave_v1';
         const STORAGE_KEY_USER = 'my_chess_username_v1';
+        const STORAGE_KEY_SETTINGS = 'my_chess_settings_v1';
+
+        // Available themes - Using jsDelivr CDN (mirrors Lichess GitHub repo, CORS-friendly)
+        // Format: https://cdn.jsdelivr.net/gh/lichess-org/lila@master/public/piece/{theme}/{piece}.svg
+        const PIECE_THEMES = {
+            // Classic chessboardjs (PNG - most reliable)
+            'wikipedia': { name: 'Wikipedia', url: 'https://chessboardjs.com/img/chesspieces/wikipedia/{piece}.png' },
+            'alpha': { name: 'Alpha', url: 'https://chessboardjs.com/img/chesspieces/alpha/{piece}.png' },
+            'uscf': { name: 'USCF', url: 'https://chessboardjs.com/img/chesspieces/uscf/{piece}.png' },
+            // Lichess sets via jsDelivr (SVG)
+            'cburnett': { name: 'Cburnett', url: 'jsdelivr:cburnett' },
+            'merida': { name: 'Merida', url: 'jsdelivr:merida' },
+            'california': { name: 'California', url: 'jsdelivr:california' },
+            'cardinal': { name: 'Cardinal', url: 'jsdelivr:cardinal' },
+            'staunty': { name: 'Staunty', url: 'jsdelivr:staunty' },
+            'tatiana': { name: 'Tatiana', url: 'jsdelivr:tatiana' },
+            'maestro': { name: 'Maestro', url: 'jsdelivr:maestro' },
+            'fresca': { name: 'Fresca', url: 'jsdelivr:fresca' },
+            'gioco': { name: 'Gioco', url: 'jsdelivr:gioco' },
+            'governor': { name: 'Governor', url: 'jsdelivr:governor' },
+            'chessnut': { name: 'Chessnut', url: 'jsdelivr:chessnut' },
+            'companion': { name: 'Companion', url: 'jsdelivr:companion' },
+            'fantasy': { name: 'Fantasy', url: 'jsdelivr:fantasy' },
+            'spatial': { name: 'Spatial', url: 'jsdelivr:spatial' },
+            'celtic': { name: 'Celtic', url: 'jsdelivr:celtic' },
+            'horsey': { name: 'Horsey', url: 'jsdelivr:horsey' },
+            'anarcandy': { name: 'Anarcandy', url: 'jsdelivr:anarcandy' },
+            'letter': { name: 'Letter', url: 'jsdelivr:letter' },
+            'shapes': { name: 'Shapes', url: 'jsdelivr:shapes' },
+            'pixel': { name: 'Pixel', url: 'jsdelivr:pixel' },
+            'mono': { name: 'Mono', url: 'jsdelivr:mono' },
+            'pirouetti': { name: 'Pirouetti', url: 'jsdelivr:pirouetti' },
+            'kosal': { name: 'Kosal', url: 'jsdelivr:kosal' },
+            'leipzig': { name: 'Leipzig', url: 'jsdelivr:leipzig' },
+            'monarchy': { name: 'Monarchy', url: 'jsdelivr:monarchy' },
+            'dubrovny': { name: 'Dubrovny', url: 'jsdelivr:dubrovny' },
+            'icpieces': { name: 'IC Pieces', url: 'jsdelivr:icpieces' },
+            'riohacha': { name: 'Riohacha', url: 'jsdelivr:riohacha' },
+            'cooke': { name: 'Cooke', url: 'jsdelivr:cooke' },
+        };
+
+        const BOARD_THEMES = {
+            'brown': { name: 'Brown', light: '#f0d9b5', dark: '#b58863' },
+            'green': { name: 'Green', light: '#eeeed2', dark: '#769656' },
+            'blue': { name: 'Blue', light: '#dee3e6', dark: '#8ca2ad' },
+            'blue2': { name: 'Blue 2', light: '#97b3cf', dark: '#546d82' },
+            'wood': { name: 'Wood', light: '#e8ceab', dark: '#b38764' },
+            'wood2': { name: 'Wood 2', light: '#f3dab0', dark: '#bb8756' },
+            'marble': { name: 'Marble', light: '#f5f5f5', dark: '#7c8b8a' },
+            'purple': { name: 'Purple', light: '#e8dff5', dark: '#9b7fc7' },
+            'pink': { name: 'Pink', light: '#f5e2e8', dark: '#d991a9' },
+            'gray': { name: 'Gray', light: '#d9d9d9', dark: '#6b6b6b' },
+            'ic': { name: 'IC', light: '#ececec', dark: '#c1c18e' },
+            'horsey': { name: 'Horsey', light: '#f1d9b4', dark: '#c96f4b' },
+        };
+
+        // Default settings
+        let appSettings = {
+            pieceTheme: 'wikipedia',
+            boardTheme: 'brown'
+        };
 
         // --- Utils ---
         function showToast(msg) {
@@ -283,8 +400,9 @@
         
         // --- Initialization ---
         $(document).ready(function() {
+            loadSettings();
             checkFeatureEval();
-            
+
             const savedUser = localStorage.getItem(STORAGE_KEY_USER);
             if(savedUser) $('#chessComUsername').val(savedUser);
 
@@ -292,12 +410,12 @@
             if (autosave && autosave !== 'start') {
                 initBoardPlayMode(autosave);
             } else {
-                initBoardPlayMode(); 
+                initBoardPlayMode();
             }
-            
+
             updateStatus();
             renderSavedGames();
-            
+
             $(window).resize(function() {
                 if(board) board.resize();
             });
@@ -361,17 +479,110 @@
         function closeMenu() {
             $('#mainMenu').addClass('hidden').removeClass('flex');
             $('#importModal').addClass('hidden');
+            $('#settingsModal').addClass('hidden');
         }
 
         $('#menuResumeBtn').on('click', closeMenu);
 
         $('#menuNewGameBtn').on('click', function() {
             quickSaveFen = null;
-            redoStack = []; 
+            redoStack = [];
+            currentGameId = null;
             updateMemoryUI();
             initBoardPlayMode('start');
             closeMenu();
             showToast("New Game Started");
+        });
+
+        // --- Settings Logic ---
+        function loadSettings() {
+            const saved = localStorage.getItem(STORAGE_KEY_SETTINGS);
+            if (saved) {
+                try {
+                    appSettings = { ...appSettings, ...JSON.parse(saved) };
+                } catch (e) {}
+            }
+        }
+
+        function saveSettings() {
+            localStorage.setItem(STORAGE_KEY_SETTINGS, JSON.stringify(appSettings));
+        }
+
+        function getPreviewPieceUrl(themeKey) {
+            const theme = PIECE_THEMES[themeKey];
+            if (!theme) return '';
+            if (theme.url.startsWith('jsdelivr:')) {
+                const themeName = theme.url.split(':')[1];
+                return `https://cdn.jsdelivr.net/gh/lichess-org/lila@master/public/piece/${themeName}/wN.svg`;
+            }
+            return theme.url.replace('{piece}', 'wN');
+        }
+
+        function renderSettingsOptions() {
+            // Piece themes
+            const pieceContainer = $('#pieceThemeOptions');
+            pieceContainer.empty();
+            Object.entries(PIECE_THEMES).forEach(([key, theme]) => {
+                const isSelected = appSettings.pieceTheme === key;
+                const previewUrl = getPreviewPieceUrl(key);
+                const btn = $(`
+                    <button class="piece-theme-btn flex items-center gap-2 p-3 rounded-lg border transition ${isSelected ? 'bg-blue-600 border-blue-500 text-white' : 'bg-gray-700 border-gray-600 text-gray-300 hover:bg-gray-600'}" data-theme="${key}">
+                        <img src="${previewUrl}" class="w-8 h-8" alt="${theme.name}">
+                        <span class="text-sm font-medium">${theme.name}</span>
+                    </button>
+                `);
+                pieceContainer.append(btn);
+            });
+
+            // Board themes
+            const boardContainer = $('#boardThemeOptions');
+            boardContainer.empty();
+            Object.entries(BOARD_THEMES).forEach(([key, theme]) => {
+                const isSelected = appSettings.boardTheme === key;
+                const btn = $(`
+                    <button class="board-theme-btn flex items-center gap-2 p-3 rounded-lg border transition ${isSelected ? 'bg-blue-600 border-blue-500 text-white' : 'bg-gray-700 border-gray-600 text-gray-300 hover:bg-gray-600'}" data-theme="${key}">
+                        <div class="w-8 h-8 rounded overflow-hidden flex flex-wrap">
+                            <div style="background-color: ${theme.light}; width: 50%; height: 50%;"></div>
+                            <div style="background-color: ${theme.dark}; width: 50%; height: 50%;"></div>
+                            <div style="background-color: ${theme.dark}; width: 50%; height: 50%;"></div>
+                            <div style="background-color: ${theme.light}; width: 50%; height: 50%;"></div>
+                        </div>
+                        <span class="text-sm font-medium">${theme.name}</span>
+                    </button>
+                `);
+                boardContainer.append(btn);
+            });
+
+            // Event handlers
+            $('.piece-theme-btn').on('click', function() {
+                appSettings.pieceTheme = $(this).data('theme');
+                saveSettings();
+                renderSettingsOptions();
+                // Rebuild board with new pieces
+                if (isEditMode) {
+                    initBoardEditMode();
+                } else {
+                    initBoardPlayMode(game.fen(), true);
+                }
+                showToast("Piece style updated");
+            });
+
+            $('.board-theme-btn').on('click', function() {
+                appSettings.boardTheme = $(this).data('theme');
+                saveSettings();
+                renderSettingsOptions();
+                applyBoardTheme();
+                showToast("Board colors updated");
+            });
+        }
+
+        $('#menuSettingsBtn').on('click', function() {
+            renderSettingsOptions();
+            $('#settingsModal').removeClass('hidden');
+        });
+
+        $('#closeSettingsBtn').on('click', function() {
+            $('#settingsModal').addClass('hidden');
         });
 
         // --- Import Logic ---
@@ -530,6 +741,17 @@
         // --- Save System w/ Modal ---
         $('#triggerSaveBtn').on('click', function() {
             $('#modalSaveName').val(isEditMode ? "Custom Setup " + new Date().toLocaleTimeString() : "");
+            $('#saveAsBranch').prop('checked', false);
+
+            // Show branch option if we're playing from a saved game
+            if (currentGameId && !isEditMode) {
+                $('#branchOption').removeClass('hidden');
+                $('#saveModalDesc').text('Save as a new game or branch from current position.');
+            } else {
+                $('#branchOption').addClass('hidden');
+                $('#saveModalDesc').text('Give this game a name. Full move history will be saved.');
+            }
+
             $('#saveModal').removeClass('hidden');
             $('#modalSaveName').focus();
         });
@@ -539,10 +761,24 @@
         $('#confirmSaveBtn').on('click', function() {
             const name = $('#modalSaveName').val().trim();
             if (!name) { showToast("Please enter a name"); return; }
-            let currentFen = isEditMode ? Chessboard.objToFen(board.position()) + " w KQkq - 0 1" : game.fen();
-            saveGameToStorage(name, currentFen);
+
+            const saveAsBranch = $('#saveAsBranch').is(':checked');
+            const options = {};
+
+            if (saveAsBranch && currentGameId) {
+                options.parentId = currentGameId;
+                options.branchMoveNum = game.history().length;
+            }
+
+            // For edit mode, we need to construct a game from the position
+            if (isEditMode) {
+                const fen = Chessboard.objToFen(board.position()) + " w KQkq - 0 1";
+                game = new Chess(fen);
+            }
+
+            saveGameToStorage(name, options);
             $('#saveModal').addClass('hidden');
-            showToast("Game Saved Successfully!");
+            showToast(saveAsBranch ? "Branch Saved!" : "Game Saved!");
         });
 
         // --- Board Logic ---
@@ -555,7 +791,9 @@
         }
 
         function onDrop(source, target) {
-            if (isEditMode) return; 
+            if (isEditMode) return;
+            clearHighlights();
+            selectedSquare = null;
             let move = game.move({ from: source, to: target, promotion: 'q' });
             if (move === null) return 'snapback';
             redoStack = [];
@@ -569,14 +807,118 @@
 
         function onChange(oldPos, newPos) {
             const fen = Chessboard.objToFen(newPos);
-            if (isEditMode) $('#fenInput').val(fen + " w KQkq - 0 1"); 
+            if (isEditMode) $('#fenInput').val(fen + " w KQkq - 0 1");
             else $('#fenInput').val(game.fen());
         }
 
+        // --- Click-to-Move Logic ---
+        function clearHighlights() {
+            // Remove highlight classes from all squares (chessboard.js uses .square-55d63 as base class)
+            $('#myBoard').find('.square-55d63').removeClass('highlight-selected highlight-legal highlight-capture');
+        }
+
+        function highlightLegalMoves(square) {
+            const moves = game.moves({ square: square, verbose: true });
+            moves.forEach(move => {
+                // Use data-square attribute selector
+                const $sq = $('#myBoard [data-square="' + move.to + '"]');
+                if (move.captured) {
+                    $sq.addClass('highlight-capture');
+                } else {
+                    $sq.addClass('highlight-legal');
+                }
+            });
+        }
+
+        function onSquareClick(square) {
+            if (isEditMode) return;
+            if (game.game_over()) return;
+
+            const piece = game.get(square);
+            const moves = piece ? game.moves({ square: square, verbose: true }) : [];
+            showToast('Clicked: ' + square + (piece ? ' (' + piece.type + ') - ' + moves.length + ' moves' : ' (empty)')); // DEBUG
+
+            // If we have a selected square, try to move there
+            if (selectedSquare) {
+                // Clicking the same square - deselect
+                if (selectedSquare === square) {
+                    clearHighlights();
+                    selectedSquare = null;
+                    return;
+                }
+
+                // Try to make the move
+                const move = game.move({ from: selectedSquare, to: square, promotion: 'q' });
+                if (move) {
+                    clearHighlights();
+                    selectedSquare = null;
+                    board.position(game.fen());
+                    redoStack = [];
+                    updateStatus();
+                    $('#evalFill').css('height', '50%');
+                    return;
+                }
+
+                // Move failed - if clicking on own piece, select it instead
+                if (piece && piece.color === game.turn()) {
+                    clearHighlights();
+                    selectedSquare = square;
+                    $('#myBoard [data-square="' + square + '"]').addClass('highlight-selected');
+                    highlightLegalMoves(square);
+                    return;
+                }
+
+                // Invalid move, just clear selection
+                clearHighlights();
+                selectedSquare = null;
+                return;
+            }
+
+            // No piece selected yet - select if it's the right color
+            if (piece && piece.color === game.turn()) {
+                clearHighlights();
+                selectedSquare = square;
+                $('#myBoard [data-square="' + square + '"]').addClass('highlight-selected');
+                highlightLegalMoves(square);
+            }
+        }
+
         // --- Mode Switching ---
+        function getPieceThemeUrl() {
+            const theme = PIECE_THEMES[appSettings.pieceTheme] || PIECE_THEMES.wikipedia;
+            const urlSpec = theme.url;
+
+            // Handle jsDelivr (Lichess) format
+            if (urlSpec.startsWith('jsdelivr:')) {
+                const themeName = urlSpec.split(':')[1];
+                return `https://cdn.jsdelivr.net/gh/lichess-org/lila@master/public/piece/${themeName}/{piece}.svg`;
+            }
+
+            // Standard URL format (e.g., chessboardjs)
+            return urlSpec;
+        }
+
+        function applyBoardTheme() {
+            const theme = BOARD_THEMES[appSettings.boardTheme] || BOARD_THEMES.brown;
+            // Apply CSS overrides for board colors
+            const styleId = 'board-theme-style';
+            let styleEl = document.getElementById(styleId);
+            if (!styleEl) {
+                styleEl = document.createElement('style');
+                styleEl.id = styleId;
+                document.head.appendChild(styleEl);
+            }
+            styleEl.textContent = `
+                #myBoard .white-1e1d7 { background-color: ${theme.light} !important; }
+                #myBoard .black-3c85d { background-color: ${theme.dark} !important; }
+            `;
+        }
+
         function initBoardPlayMode(startFen = 'start', preserveGameObj = false) {
             isEditMode = false;
-            
+            selectedSquare = null;
+            clearHighlights();
+
             if (!preserveGameObj) {
                 let loadSuccess = true;
                 if (startFen !== 'start') {
@@ -594,18 +936,31 @@
             }
 
             const config = {
-                draggable: true,
+                draggable: false,  // Disable drag - we use click-to-move
                 position: game.fen(),
-                onDragStart: onDragStart,
-                onDrop: onDrop,
-                onSnapEnd: onSnapEnd,
-                onChange: onChange,
-                pieceTheme: 'https://chessboardjs.com/img/chesspieces/wikipedia/{piece}.png'
+                pieceTheme: getPieceThemeUrl()
             };
 
             if (board) board.destroy();
+
+            // Remove old click handlers before creating new board
+            $('#myBoard').off('click mousedown mouseup touchstart touchend');
+
             board = Chessboard('myBoard', config);
-            setTimeout(() => { board.resize(); }, 200);
+
+            // Simple click handler for click-to-move
+            $('#myBoard').on('click', function(e) {
+                const $target = $(e.target);
+                let $square = $target.closest('[data-square]');
+                if ($square.length) {
+                    onSquareClick($square.attr('data-square'));
+                }
+            });
+
+            setTimeout(() => {
+                board.resize();
+                applyBoardTheme();
+            }, 200);
 
             $('#toggleModeBtn').html('<i class="fas fa-tools mr-1"></i> Edit').removeClass('bg-green-600').addClass('bg-blue-600');
             $('#playControls').removeClass('hidden').addClass('grid');
@@ -618,6 +973,7 @@
 
         function initBoardEditMode() {
             isEditMode = true;
+            selectedSquare = null;
             const currentPos = board.position();
             const config = {
                 draggable: true,
@@ -625,12 +981,15 @@
                 dropOffBoard: 'trash',
                 sparePieces: true,
                 onChange: onChange,
-                pieceTheme: 'https://chessboardjs.com/img/chesspieces/wikipedia/{piece}.png'
+                pieceTheme: getPieceThemeUrl()
             };
 
             if (board) board.destroy();
             board = Chessboard('myBoard', config);
-            setTimeout(() => { board.resize(); }, 200);
+            setTimeout(() => {
+                board.resize();
+                applyBoardTheme();
+            }, 200);
 
             $('#toggleModeBtn').html('<i class="fas fa-play mr-1"></i> Play').removeClass('bg-blue-600').addClass('bg-green-600');
             $('#playControls').addClass('hidden').removeClass('grid');
@@ -703,24 +1062,110 @@
         }
 
         // --- Storage ---
+        // New format: { id, name, pgn, fen, date, parentId?, branchMoveNum?, children:[] }
         function getSavedGames() {
             const stored = localStorage.getItem(STORAGE_KEY_SAVES);
-            return stored ? JSON.parse(stored) : [];
+            if (!stored) return [];
+            try {
+                const games = JSON.parse(stored);
+                // Migration: convert old format (fen only) to new format (pgn)
+                return games.map(g => {
+                    if (!g.pgn && g.fen) {
+                        // Old format - convert
+                        return { ...g, pgn: null, children: g.children || [] };
+                    }
+                    return { ...g, children: g.children || [] };
+                });
+            } catch (e) {
+                return [];
+            }
         }
 
-        function saveGameToStorage(name, fen) {
+        function saveGameToStorage(name, options = {}) {
             const games = getSavedGames();
-            const newGame = { id: Date.now(), name: name, fen: fen, date: new Date().toLocaleDateString() };
+            const pgn = game.pgn();
+            const fen = game.fen();
+            const moveNum = game.history().length;
+
+            const newGame = {
+                id: Date.now(),
+                name: name,
+                pgn: pgn,
+                fen: fen,
+                date: new Date().toLocaleDateString(),
+                parentId: options.parentId || null,
+                branchMoveNum: options.branchMoveNum || null,
+                children: []
+            };
+
+            // If this is a branch from another game, add it as a child
+            if (options.parentId) {
+                const parentIndex = games.findIndex(g => g.id === options.parentId);
+                if (parentIndex !== -1) {
+                    games[parentIndex].children = games[parentIndex].children || [];
+                    games[parentIndex].children.push(newGame.id);
+                }
+            }
+
             games.unshift(newGame);
             localStorage.setItem(STORAGE_KEY_SAVES, JSON.stringify(games));
+            currentGameId = newGame.id;
             renderSavedGames();
+            return newGame.id;
         }
 
         function deleteGameFromStorage(id) {
             let games = getSavedGames();
-            games = games.filter(g => g.id !== id);
+            const gameToDelete = games.find(g => g.id === id);
+
+            // Also delete all children (branches) recursively
+            function getDescendants(gameId) {
+                const g = games.find(x => x.id === gameId);
+                if (!g || !g.children || g.children.length === 0) return [gameId];
+                let descendants = [gameId];
+                g.children.forEach(childId => {
+                    descendants = descendants.concat(getDescendants(childId));
+                });
+                return descendants;
+            }
+
+            const toDelete = new Set(getDescendants(id));
+
+            // Remove from parent's children list
+            if (gameToDelete && gameToDelete.parentId) {
+                const parent = games.find(g => g.id === gameToDelete.parentId);
+                if (parent && parent.children) {
+                    parent.children = parent.children.filter(cid => cid !== id);
+                }
+            }
+
+            games = games.filter(g => !toDelete.has(g.id));
             localStorage.setItem(STORAGE_KEY_SAVES, JSON.stringify(games));
+
+            if (currentGameId === id) currentGameId = null;
             renderSavedGames();
+        }
+
+        function loadGameFromStorage(gameId) {
+            const games = getSavedGames();
+            const savedGame = games.find(g => g.id === gameId);
+            if (!savedGame) return false;
+
+            quickSaveFen = null;
+            redoStack = [];
+            updateMemoryUI();
+
+            // Load PGN if available, otherwise fall back to FEN
+            if (savedGame.pgn) {
+                game = new Chess();
+                game.load_pgn(savedGame.pgn);
+                initBoardPlayMode(null, true);
+            } else if (savedGame.fen) {
+                initBoardPlayMode(savedGame.fen);
+            }
+
+            currentGameId = gameId;
+            return true;
         }
 
         function renderSavedGames() {
@@ -728,27 +1173,63 @@
             $('#menuSaveCount').text(games.length + " saved");
             const container = $('#menuSavedGamesList');
             container.empty();
+
             if (games.length === 0) {
                 container.html('<div class="flex flex-col items-center justify-center py-8 text-gray-500 opacity-50"><i class="fas fa-ghost text-3xl mb-2"></i><span class="text-xs">No saved games yet</span></div>');
                 return;
             }
-            games.forEach(g => {
-                const el = `<div class="bg-gray-700/50 hover:bg-gray-700 p-3 rounded-xl flex justify-between items-center group transition border border-gray-600/50"><div class="flex-grow overflow-hidden cursor-pointer load-game-trigger" data-fen="${g.fen}"><div class="font-bold text-sm text-gray-200 truncate">${g.name}</div><div class="text-[10px] text-gray-400 font-mono mt-0.5">${g.date}</div></div><div class="flex items-center gap-2 pl-2"><button class="load-game-trigger bg-blue-600 hover:bg-blue-500 text-white text-xs px-3 py-1.5 rounded-lg font-bold shadow-sm" data-fen="${g.fen}">Load</button><button class="delete-game-trigger text-gray-500 hover:text-red-400 p-2 transition" data-id="${g.id}"><i class="fas fa-times"></i></button></div></div>`;
+
+            // Build tree structure for display
+            const rootGames = games.filter(g => !g.parentId);
+            const gameMap = new Map(games.map(g => [g.id, g]));
+
+            function renderGameItem(g, depth = 0) {
+                const indent = depth > 0 ? `margin-left: ${depth * 16}px;` : '';
+                const branchIcon = depth > 0 ? '<i class="fas fa-code-branch text-purple-400 mr-1 text-xs"></i>' : '';
+                const childCount = (g.children || []).length;
+                const childBadge = childCount > 0 ? `<span class="text-[9px] bg-purple-600 text-white px-1.5 py-0.5 rounded-full ml-1">${childCount} branch${childCount > 1 ? 'es' : ''}</span>` : '';
+                const moveCount = g.pgn ? g.pgn.split(/\d+\./).length - 1 : 0;
+                const moveInfo = moveCount > 0 ? `<span class="text-[9px] text-gray-500 ml-2">${moveCount} moves</span>` : '';
+
+                const el = $(`
+                    <div class="bg-gray-700/50 hover:bg-gray-700 p-3 rounded-xl flex justify-between items-center group transition border border-gray-600/50" style="${indent}">
+                        <div class="flex-grow overflow-hidden cursor-pointer load-game-trigger" data-id="${g.id}">
+                            <div class="font-bold text-sm text-gray-200 truncate flex items-center">
+                                ${branchIcon}${g.name}${childBadge}
+                            </div>
+                            <div class="text-[10px] text-gray-400 font-mono mt-0.5">${g.date}${moveInfo}</div>
+                        </div>
+                        <div class="flex items-center gap-2 pl-2">
+                            <button class="load-game-trigger bg-blue-600 hover:bg-blue-500 text-white text-xs px-3 py-1.5 rounded-lg font-bold shadow-sm" data-id="${g.id}">Load</button>
+                            <button class="delete-game-trigger text-gray-500 hover:text-red-400 p-2 transition" data-id="${g.id}"><i class="fas fa-times"></i></button>
+                        </div>
+                    </div>
+                `);
                 container.append(el);
-            });
 
+                // Render children (branches)
+                if (g.children && g.children.length > 0) {
+                    g.children.forEach(childId => {
+                        const child = gameMap.get(childId);
+                        if (child) renderGameItem(child, depth + 1);
+                    });
+                }
+            }
+
+            rootGames.forEach(g => renderGameItem(g));
+
+            // Event handlers
             $('.load-game-trigger').on('click', function(e) {
-                if(e.target !== this && !$(this).hasClass('load-game-trigger')) return;
-                const fen = $(this).data('fen');
-                quickSaveFen = null;
-                redoStack = []; 
-                updateMemoryUI();
-                initBoardPlayMode(fen);
-                closeMenu();
-                showToast("Game Loaded");
+                e.stopPropagation();
+                const id = $(this).data('id');
+                if (loadGameFromStorage(id)) {
+                    closeMenu();
+                    showToast("Game Loaded");
+                }
             });
 
-            $('.delete-game-trigger').on('click', function() {
+            $('.delete-game-trigger').on('click', function(e) {
+                e.stopPropagation();
                 const id = $(this).data('id');
                 deleteGameFromStorage(id);
                 showToast("Game Deleted");
