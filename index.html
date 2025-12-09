@@ -247,6 +247,24 @@
             <div id="myBoard" class="flex-grow shadow-2xl rounded-lg touch-none border-4 border-gray-700 aspect-square"></div>
         </div>
 
+        <!-- Captured Pieces & Score -->
+        <div id="capturedArea" class="w-full max-w-[420px] mb-4 bg-gray-800/50 rounded-xl p-3 border border-gray-700/50">
+            <div class="flex justify-between items-center">
+                <div class="flex-1">
+                    <div class="text-[10px] text-gray-500 uppercase mb-1">Black captured</div>
+                    <div id="capturedByBlack" class="text-xl leading-none min-h-[24px]"></div>
+                </div>
+                <div id="materialScore" class="text-center px-4">
+                    <div class="text-xl font-bold text-white">0</div>
+                    <div class="text-[9px] text-gray-500 uppercase">Score</div>
+                </div>
+                <div class="flex-1 text-right">
+                    <div class="text-[10px] text-gray-500 uppercase mb-1">White captured</div>
+                    <div id="capturedByWhite" class="text-xl leading-none min-h-[24px]"></div>
+                </div>
+            </div>
+        </div>
+
         <!-- MAIN CONTROLS (Updated for History) -->
         <div id="playControls" class="w-full max-w-[400px] grid grid-cols-4 gap-2 mb-6">
             <button id="backBtn" class="bg-gray-700 hover:bg-gray-600 text-white py-3 rounded-xl shadow-lg flex flex-col items-center justify-center gap-1 transition">
@@ -835,8 +853,6 @@
             if (game.game_over()) return;
 
             const piece = game.get(square);
-            const moves = piece ? game.moves({ square: square, verbose: true }) : [];
-            showToast('Clicked: ' + square + (piece ? ' (' + piece.type + ') - ' + moves.length + ' moves' : ' (empty)')); // DEBUG
 
             // If we have a selected square, try to move there
             if (selectedSquare) {
@@ -1052,13 +1068,82 @@
                 if (game.in_check()) status += ' (Check)';
             }
             $('#status').text(status);
-            
+
             const currentFen = game.fen();
             localStorage.setItem(STORAGE_KEY_AUTOSAVE, currentFen);
             $('#fenInput').val(currentFen);
-            
+
             if (redoStack.length > 0) $('#forwardBtn').removeClass('btn-disabled');
             else $('#forwardBtn').addClass('btn-disabled');
+
+            updateCapturedPieces();
+        }
+
+        // Piece values for score calculation
+        const PIECE_VALUES = { p: 1, n: 3, b: 3, r: 5, q: 9, k: 0 };
+
+        // Unicode chess pieces for display
+        const PIECE_UNICODE = {
+            wp: '♙', wn: '♘', wb: '♗', wr: '♖', wq: '♕', wk: '♔',
+            bp: '♟', bn: '♞', bb: '♝', br: '♜', bq: '♛', bk: '♚'
+        };
+
+        function updateCapturedPieces() {
+            // Starting pieces for each side
+            const startingPieces = { p: 8, n: 2, b: 2, r: 2, q: 1, k: 1 };
+
+            // Count current pieces on board
+            const dominated = game.board();
+            const whitePieces = { p: 0, n: 0, b: 0, r: 0, q: 0, k: 0 };
+            const blackPieces = { p: 0, n: 0, b: 0, r: 0, q: 0, k: 0 };
+
+            dominated.forEach(row => {
+                row.forEach(sq => {
+                    if (sq) {
+                        if (sq.color === 'w') whitePieces[sq.type]++;
+                        else blackPieces[sq.type]++;
+                    }
+                });
+            });
+
+            // Calculate captured pieces (what each side has taken)
+            let capturedByWhite = ''; // Black pieces that white captured
+            let capturedByBlack = ''; // White pieces that black captured
+            let whiteScore = 0;
+            let blackScore = 0;
+
+            // Order: Q, R, B, N, P (high value first)
+            const pieceOrder = ['q', 'r', 'b', 'n', 'p'];
+
+            pieceOrder.forEach(type => {
+                // Black pieces captured by white
+                const blackCaptured = startingPieces[type] - blackPieces[type];
+                for (let i = 0; i < blackCaptured; i++) {
+                    capturedByWhite += PIECE_UNICODE['b' + type];
+                    whiteScore += PIECE_VALUES[type];
+                }
+
+                // White pieces captured by black
+                const whiteCaptured = startingPieces[type] - whitePieces[type];
+                for (let i = 0; i < whiteCaptured; i++) {
+                    capturedByBlack += PIECE_UNICODE['w' + type];
+                    blackScore += PIECE_VALUES[type];
+                }
+            });
+
+            // Update display
+            $('#capturedByWhite').text(capturedByWhite || '—');
+            $('#capturedByBlack').text(capturedByBlack || '—');
+
+            // Material advantage (positive = white ahead, negative = black ahead)
+            const materialDiff = whiteScore - blackScore;
+            const scoreText = materialDiff > 0 ? '+' + materialDiff : (materialDiff < 0 ? materialDiff : '0');
+            const scoreColor = materialDiff > 0 ? 'text-green-400' : (materialDiff < 0 ? 'text-red-400' : 'text-white');
+
+            $('#materialScore').html(`
+                <div class="text-xl font-bold ${scoreColor}">${scoreText}</div>
+                <div class="text-[9px] text-gray-500 uppercase">Material</div>
+            `);
         }
 
         // --- Storage ---
