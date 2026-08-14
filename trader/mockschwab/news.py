@@ -5,7 +5,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
-from .market import MarketSim
+from .market import MarketSim, _stable_hash
 
 
 class NewsFeed:
@@ -107,7 +107,7 @@ class NewsFeed:
         base_expected = time_delta_seconds / 900.0
 
         # Use seeded RNG to decide number of items deterministically
-        self.rng.seed(hash(symbol) ^ int(sim_time_seconds) ^ self.seed)
+        self.rng.seed(_stable_hash(symbol) ^ int(sim_time_seconds) ^ self.seed)
 
         # Probability-based generation with burst potential
         num_items = 0

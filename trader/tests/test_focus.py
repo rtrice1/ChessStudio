@@ -1,8 +1,8 @@
 """Tests for the focus subsystem."""
 import unittest
 
-from agent.focus import (FocusState, Item, assess, build_context,
-                         items_from_snapshot, salience)
+from agent.focus import (FocusSession, FocusState, Item, assess,
+                         build_context, items_from_snapshot, salience)
 
 
 def account(equity=100_000.0, positions=None):
@@ -123,6 +123,83 @@ class TestItemsFromSnapshot(unittest.TestCase):
         # news stays bottom-priority: misleading by construction
         self.assertLess(items["news:NVDA"].priority,
                         items["market:NVDA"].priority + 0.001)
+
+
+class TestDetailRendering(unittest.TestCase):
+    def items(self):
+        return [
+            Item("position:NVDA", "NVDA held", 0.9, topics=["NVDA"],
+                 detail="NVDA x50 @180.00, upl -50, stop 177.3, target 184.5, "
+                        "entered on ORB at 10:04, vwap 179.2 and holding above"),
+            Item("market:XOM", "XOM quiet", 0.3, topics=["XOM"],
+                 detail="XOM long detail that narrow focus should never render"),
+        ]
+
+    def test_narrow_renders_on_topic_detail(self):
+        result = build_context(self.items(), FocusState(0.9, ["NVDA"]),
+                               budget_chars=500)
+        self.assertIn("entered on ORB at 10:04", result["text"])
+        self.assertNotIn("never render", result["text"])
+
+    def test_wide_renders_briefs_only(self):
+        result = build_context(self.items(), FocusState(0.2, []),
+                               budget_chars=500)
+        self.assertIn("NVDA held", result["text"])
+        self.assertNotIn("entered on ORB", result["text"])
+        self.assertIn("XOM quiet", result["text"])
+
+
+class TestFocusSession(unittest.TestCase):
+    def test_task_lifecycle_general_to_specific_and_back(self):
+        session = FocusSession()
+        self.assertEqual(session.state.width, FocusSession.REST_WIDTH)
+
+        started = session.start_task(["NVDA"], "reviewing NVDA setup")
+        self.assertEqual(started.width, FocusSession.START_WIDTH)  # general first
+
+        d1 = session.deepen("placing the trade")
+        d2 = session.deepen("managing the position")
+        self.assertGreater(d2.width, d1.width)
+        self.assertGreater(d1.width, started.width)
+        self.assertEqual(d2.topics, ["NVDA"])
+
+        relaxed = session.relax("trade thesis unclear, stepping back")
+        self.assertLess(relaxed.width, d2.width)
+
+        ended = session.end_task()
+        self.assertEqual(ended.width, FocusSession.REST_WIDTH)
+        self.assertEqual(ended.topics, [])
+        self.assertEqual([h["event"] for h in session.history],
+                         ["start_task", "deepen", "deepen", "relax", "end_task"])
+
+    def test_width_is_clamped(self):
+        session = FocusSession()
+        session.start_task(["A"])
+        for _ in range(10):
+            session.deepen()
+        self.assertEqual(session.state.width, 1.0)
+        for _ in range(10):
+            session.relax()
+        self.assertEqual(session.state.width, FocusSession.REST_WIDTH)
+
+    def test_situation_seizes_focus_from_wide_trajectory(self):
+        session = FocusSession()
+        session.start_task(["XOM"], "idle review of XOM")
+        pos = [{"symbol": "NVDA", "quantity": 50, "averagePrice": 180.0,
+                "marketValue": 9000.0}]
+        state = session.reassess(account(equity=98_000.0, positions=pos),
+                                 [], None, 0.5, 100_000.0)
+        self.assertEqual(state.width, 1.0)
+        self.assertEqual(state.topics, ["NVDA"])  # the drawdown is the task now
+        self.assertIn("seized", session.history[-1]["event"])
+
+    def test_situation_does_not_widen_a_deep_task(self):
+        session = FocusSession()
+        session.start_task(["NVDA"])
+        session.deepen(); session.deepen(); session.deepen()
+        deep = session.state.width
+        state = session.reassess(account(), [], None, 0.3, 100_000.0)
+        self.assertEqual(state.width, deep)  # calm situation doesn't interrupt
 
 
 if __name__ == "__main__":

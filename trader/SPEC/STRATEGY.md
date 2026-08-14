@@ -53,6 +53,19 @@ strategy that naively trades headlines loses in sim before it can lose
 for real. Whether news is a fade signal, a volatility signal, or pure
 noise is a question for the accumulated ledger, not an assumption.
 
+And it's a question that must be answered without peeking:
+`agent/impact.py` is the only sanctioned way to relate news to prices.
+Every measurement anchors at the first candle *at or after* the item's
+`published` timestamp and looks strictly forward; pre-publication moves
+are structurally excluded (there is no parameter that admits them), and
+news too fresh to have a candle after it returns None — wait, don't
+peek. A headline that "explains" a move that happened before it existed
+is the classic look-ahead bias that makes backtests lie, and it is
+disallowed at the API level rather than by good intentions. The
+`scoreboard()` aggregation (mean forward return and hit rate by source)
+is how the wire-vs-board "someone is wrong" question eventually gets a
+number.
+
 ## What Tier 3 ("me") adds when live
 
 The rules can't read; the plan can. `DayPlan` is the entire interface:

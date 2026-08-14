@@ -3,8 +3,16 @@
 import math
 import random
 import time
+import zlib
 from datetime import datetime, timedelta, timezone
 from typing import Optional
+
+
+def _stable_hash(text: str) -> int:
+    """Process-independent hash. Python's built-in hash() of a str is
+    randomized per interpreter run, which would give every restart a
+    different price history for the same seed."""
+    return zlib.crc32(text.encode("utf-8"))
 
 
 class MarketSim:
@@ -51,7 +59,7 @@ class MarketSim:
         # Per-symbol parameters (drift, volatility, regime)
         self.params: dict[str, dict] = {}
         for symbol in self.symbols:
-            self.rng.seed(hash(symbol) ^ seed)
+            self.rng.seed(_stable_hash(symbol) ^ seed)
             self.params[symbol] = {
                 "drift": self.rng.gauss(0.0001, 0.00005),
                 "volatility": self.rng.uniform(0.15, 0.35),
@@ -114,12 +122,12 @@ class MarketSim:
         Deterministic: same seed always produces same price for same symbol/day.
         """
         # Use a deterministic RNG stream for this symbol's price path
-        path_rng = random.Random(hash(symbol) ^ self.seed)
+        path_rng = random.Random(_stable_hash(symbol) ^ self.seed)
 
         current_price = self.start_prices.get(symbol, 100.0)
         current_day = 0.0
         sim_regime_counter = 0
-        current_regime_idx = hash(symbol) % 4  # Deterministic initial regime
+        current_regime_idx = _stable_hash(symbol) % 4  # Deterministic initial regime
 
         regimes = ["low_vol_bull", "low_vol_bear", "high_vol_bull", "high_vol_bear"]
         current_regime = regimes[current_regime_idx]
@@ -158,6 +166,40 @@ class MarketSim:
             current_day += dt
 
         return max(current_price, 0.01)  # Prevent zero/negative prices
+
+    def day_candles(self, symbol: str, day_index: float = 1.0,
+                    interval_minutes: int = 5, bars: int = 78) -> list[dict]:
+        """One simulated trading day of candles, fully wall-clock-independent.
+
+        Unlike price_history (which generates backward from the current sim
+        time and therefore has no history on a freshly constructed sim),
+        this walks the deterministic GBM path over sim days
+        [day_index, day_index + bars*interval) directly. Same (seed, symbol,
+        day_index) always yields identical candles — which is what backfill
+        and replay tooling need. Candle datetimes are labeled from a fixed
+        reference session start so downstream day-grouping is stable.
+        """
+        if symbol not in self.symbols:
+            raise KeyError(f"Unknown symbol: {symbol}")
+        base_dt = datetime(2020, 1, 6, 14, 30, tzinfo=timezone.utc) + timedelta(
+            days=int(day_index))
+        vol_rng = random.Random(_stable_hash(symbol) ^ self.seed ^ 0x5EED)
+        interval_days = interval_minutes / (24 * 60)
+        candles = []
+        for i in range(bars):
+            start_d = day_index + i * interval_days
+            samples = [self._gbm_price(symbol, start_d + frac * interval_days)
+                       for frac in (0.0, 0.25, 0.5, 0.75, 1.0)]
+            candles.append({
+                "open": round(samples[0], 2),
+                "high": round(max(samples), 2),
+                "low": round(min(samples), 2),
+                "close": round(samples[-1], 2),
+                "volume": vol_rng.randint(100_000, 10_000_000),
+                "datetime": (base_dt + timedelta(minutes=(i + 1) * interval_minutes)
+                             ).isoformat(),
+            })
+        return candles
 
     def quote(self, symbol: str) -> dict:
         """

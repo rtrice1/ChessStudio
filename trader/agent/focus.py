@@ -44,12 +44,22 @@ class FocusState:
 
 @dataclass
 class Item:
-    """One candidate piece of context."""
+    """One candidate piece of context.
+
+    `text` is the general form — one line, enough to know it exists.
+    `detail` is the specific form — everything about it. Which one gets
+    rendered depends on the focus: narrow focus doesn't just *select* the
+    on-topic items, it renders them at depth, while wide focus renders
+    breadth at a glance. More concentration = more specific information
+    about the specific thing; less = more general information about more
+    things.
+    """
     key: str                      # e.g. "position:NVDA", "belief:daily_stop"
     text: str
     priority: float               # base importance 0..1
     topics: list[str] = field(default_factory=list)
     recency: float = 1.0          # 1 fresh … 0 stale
+    detail: str | None = None     # deep form, used when focus is on it
 
 
 # Base priorities: what always matters more than what.
@@ -109,6 +119,17 @@ def salience(item: Item, state: FocusState) -> float:
     return item.priority * topic_match * (0.5 + 0.5 * item.recency)
 
 
+DETAIL_WIDTH = 0.6  # focus narrower than this renders on-topic items in depth
+
+
+def _render(item: Item, state: FocusState) -> str:
+    """Pick the resolution this item is seen at, given the focus."""
+    on_topic = bool(state.topics) and any(t in state.topics for t in item.topics)
+    if item.detail and state.width >= DETAIL_WIDTH and (on_topic or not item.topics):
+        return item.detail
+    return item.text
+
+
 def build_context(items: list[Item], state: FocusState,
                   budget_chars: int = 8000, max_passes: int = 3) -> dict:
     """Assemble the focused context. Returns {"text", "state", "included",
@@ -123,14 +144,17 @@ def build_context(items: list[Item], state: FocusState,
         # item stays out of mind even if the budget has room for it.
         floor = 0.15 * state.width
         included: list[Item] = []
+        rendered: dict[str, str] = {}
         used = 0
         for item in ranked:
             if salience(item, state) < floor:
                 continue
-            cost = len(item.text) + 1
+            text = _render(item, state)
+            cost = len(text) + 1
             if used + cost > budget_chars:
                 continue
             included.append(item)
+            rendered[item.key] = text
             used += cost
 
         # Self-interaction: what did the selection itself say matters?
@@ -147,10 +171,73 @@ def build_context(items: list[Item], state: FocusState,
                            state.reason + " -> refocused by assembly")
 
     included_keys = {it.key for it in included}
-    text = "\n".join(it.text for it in included)
+    text = "\n".join(rendered[it.key] for it in included)
     return {"text": text, "state": state, "passes": passes,
             "included": [it.key for it in included],
             "excluded": [it.key for it in items if it.key not in included_keys]}
+
+
+class FocusSession:
+    """Focus as a trajectory, not a setting.
+
+    Tasks start general and drill in: `start_task` opens wide on the
+    task's topics, `deepen` ratchets narrower as execution proceeds (more
+    concentration, more specific information, less of everything else),
+    `relax` pulls back out when the work hits confusion or needs
+    perspective, `end_task` returns to the wide resting state. The
+    situational `assess()` can still seize focus at any time — a drawdown
+    outranks whatever the trajectory wanted — via `reassess`, which takes
+    the narrower of trajectory and situation. Every move is logged, so
+    the ledger shows not just what was decided but how attention moved
+    while deciding it. The standing goal is minimal overall context:
+    resting state is wide but *small*, and depth is bought only where the
+    focus is.
+    """
+
+    REST_WIDTH = 0.15
+    START_WIDTH = 0.3
+    STEP = 0.25
+
+    def __init__(self):
+        self.state = FocusState(self.REST_WIDTH, [], "at rest")
+        self.history: list[dict] = []
+
+    def _move(self, event: str, width: float, topics: list[str], reason: str) -> FocusState:
+        self.state = FocusState(round(min(1.0, max(self.REST_WIDTH, width)), 2),
+                                topics, reason)
+        self.history.append({"event": event, "width": self.state.width,
+                             "topics": list(topics), "reason": reason})
+        return self.state
+
+    def start_task(self, topics: list[str], reason: str = "task started") -> FocusState:
+        """General first: survey the task's area before touching it."""
+        return self._move("start_task", self.START_WIDTH, topics, reason)
+
+    def deepen(self, reason: str = "executing") -> FocusState:
+        """Feed in more specifics, shed more of everything else."""
+        return self._move("deepen", self.state.width + self.STEP,
+                          self.state.topics, reason)
+
+    def relax(self, reason: str = "stepping back") -> FocusState:
+        """Widen — confusion, surprise, or a need for perspective."""
+        return self._move("relax", self.state.width - self.STEP - 0.05,
+                          self.state.topics, reason)
+
+    def end_task(self, reason: str = "task done") -> FocusState:
+        return self._move("end_task", self.REST_WIDTH, [], reason)
+
+    def reassess(self, account: dict, alerts: list[dict], hunch: dict | None,
+                 session_pct: float, day_open_equity: float) -> FocusState:
+        """Merge the task trajectory with the situation; urgency wins.
+        If the situation demands narrower focus than the trajectory has,
+        the situation takes over (its topics too — a drawdown on held
+        positions is now the task)."""
+        situational = assess(account, alerts, hunch, session_pct, day_open_equity)
+        if situational.width > self.state.width:
+            return self._move("seized", situational.width, situational.topics,
+                              "situation seized focus: " + situational.reason)
+        return self.state
+
 
 
 def items_from_snapshot(snapshot: dict, desk_context: dict | None = None,

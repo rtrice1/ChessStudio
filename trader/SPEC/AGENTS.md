@@ -72,6 +72,20 @@ agent") on the box: same interface, smarter salience, still cheap. The
 excluded-list goes in the ledger with the decision, so a post-mortem can
 ask not just "what did I know" but "what had I chosen not to look at."
 
+Focus is also a **trajectory**, not a setting (`FocusSession`): a task
+starts general — wide enough to survey its area — then ratchets narrower
+as execution proceeds, and the *resolution* of information scales with
+the width. Every context item carries a one-line general form and a deep
+specific form; narrow focus doesn't just select the on-topic items, it
+renders them in depth while everything else drops to a line or drops
+out. Relaxing works the same in reverse (confusion or surprise widens),
+`end_task` returns to a wide, minimal resting state, and the situation
+can seize focus at any moment — a drawdown on held positions outranks
+whatever the trajectory was attending to, and *becomes* the task. Every
+zoom in or out is logged, so the record shows how attention moved, not
+just what it concluded. Standing goal: minimal overall context — rest
+wide but small, and buy depth only where the focus is.
+
 ## Hard limits (enforced in `agent/risk.py`, not in prompts)
 
 | Limit | Value |
