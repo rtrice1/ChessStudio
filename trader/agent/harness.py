@@ -55,11 +55,13 @@ DAY_PLAN_SCHEMA = {
                                "description": "Fraction of equity risked per trade, <= 0.005"},
         "stop_atr": {"type": "number"},
         "target_atr": {"type": "number"},
+        "instrument": {"type": "string", "enum": ["shares", "calls"],
+                       "description": "Express entries as stock or long 0DTE calls"},
         "rationale": {"type": "string",
                       "description": "One paragraph: why this plan, citing the evidence used"},
     },
     "required": ["symbols", "bias_off", "per_trade_risk_pct",
-                 "stop_atr", "target_atr", "rationale"],
+                 "stop_atr", "target_atr", "instrument", "rationale"],
     "additionalProperties": False,
 }
 
@@ -149,6 +151,9 @@ def apply_day_plan(result: dict, data_dir: str) -> DayPlan:
         per_trade_risk_pct=min(0.005, max(0.001, float(result["per_trade_risk_pct"]))),
         stop_atr=min(3.0, max(0.5, float(result["stop_atr"]))),
         target_atr=min(5.0, max(1.0, float(result["target_atr"]))),
+        instrument=(result.get("instrument")
+                    if result.get("instrument") in ("shares", "calls")
+                    else "shares"),
         rationale=str(result.get("rationale", ""))[:2000],
     )
     os.makedirs(data_dir, exist_ok=True)

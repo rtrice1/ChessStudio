@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from .risk import RiskLimits, check_order
+from .risk import RiskLimits, check_order, is_option
 
 
 @dataclass
@@ -46,6 +46,16 @@ class DayPlan:
     target_atr: float = 2.5
     # Exit longs that lose VWAP by this fraction (momentum failed).
     vwap_fail_pct: float = 0.002
+    # "shares" or "calls" — with "calls", breakout signals are expressed by
+    # buying near-the-money 0DTE calls instead of stock. LONG ONLY, always.
+    instrument: str = "shares"
+    # Premium spent per options entry, as a fraction of equity. This is the
+    # full amount at risk — a 0DTE option can and does go to zero.
+    premium_per_trade_pct: float = 0.01
+    # Premium exits: stop at this fraction of entry premium, target at that
+    # multiple of it. Wide on purpose — option noise is huge.
+    premium_stop_frac: float = 0.5
+    premium_target_mult: float = 2.0
     rationale: str = "default mechanical plan (benchmark)"
 
 
@@ -140,6 +150,67 @@ def decide(snapshot: dict, ctx: SessionContext) -> list[Decision]:
     return decisions
 
 
+def pick_call(chain: dict, target_delta: float = 0.55) -> dict | None:
+    """Nearest-the-money call by delta from a chain payload."""
+    calls = [c for c in (chain.get("calls") or [])
+             if c.get("ask", 0) > 0 and c.get("delta") is not None]
+    if not calls:
+        return None
+    return min(calls, key=lambda c: abs(float(c["delta"]) - target_delta))
+
+
+def translate_to_calls(decision: Decision, client, equity: float,
+                       plan: DayPlan) -> Decision | None:
+    """Express a stock breakout signal as a long call purchase.
+
+    The signal machinery is unchanged — same ORB+VWAP trigger — only the
+    instrument differs. Sizing is by premium budget: contracts = budget //
+    per-contract cost, and the whole budget is the amount at risk.
+    """
+    chain = client.chain(decision.symbol)
+    if not chain or chain.get("error"):
+        return None
+    call = pick_call(chain)
+    if call is None:
+        return None
+    per_contract = float(call["ask"]) * 100.0  # chain premiums are per share
+    budget = plan.premium_per_trade_pct * equity
+    contracts = int(budget // per_contract)
+    if contracts < 1:
+        return None
+    return Decision(call["contractSymbol"], "BUY", contracts,
+                    f"{decision.rationale} | as calls: {call['contractSymbol']} "
+                    f"delta {float(call['delta']):.2f}, premium "
+                    f"{per_contract:.2f}/contract x{contracts} "
+                    f"(risking {plan.premium_per_trade_pct:.1%} of equity)")
+
+
+def option_exits(account: dict, client, plan: DayPlan) -> list[Decision]:
+    """Premium-based stops and targets for held contracts. A long option
+    that loses half its premium is a broken trade; one that doubles gets
+    taken. Everything left is flattened at end of day like any position."""
+    decisions: list[Decision] = []
+    for p in account.get("positions", []):
+        symbol = p.get("symbol", "")
+        qty = int(p.get("quantity", 0))
+        if qty <= 0 or not is_option(symbol):
+            continue
+        quote = (client.quotes([symbol]) or {}).get(symbol) or {}
+        bid = float(quote.get("bid") or 0.0)
+        avg = float(p.get("averagePrice") or 0.0)
+        if avg <= 0 or bid <= 0:
+            continue
+        if bid <= plan.premium_stop_frac * avg:
+            decisions.append(Decision(symbol, "SELL", qty,
+                                      f"premium stop: {bid:.2f} <= "
+                                      f"{plan.premium_stop_frac:.0%} of {avg:.2f}"))
+        elif bid >= plan.premium_target_mult * avg:
+            decisions.append(Decision(symbol, "SELL", qty,
+                                      f"premium target: {bid:.2f} >= "
+                                      f"{plan.premium_target_mult:.1f}x {avg:.2f}"))
+    return decisions
+
+
 def execute(decisions: list[Decision], snapshot: dict, ctx: SessionContext,
             client, ledger) -> list[dict]:
     """Risk-gate and place orders. Identical path for planned, mechanical,
@@ -151,8 +222,24 @@ def execute(decisions: list[Decision], snapshot: dict, ctx: SessionContext,
     for d in decisions:
         if d.action == "HOLD" or d.quantity <= 0:
             continue
-        quote = quotes.get(d.symbol) or {}
-        est_price = quote.get("ask") if d.action == "BUY" else quote.get("bid")
+        # Plan says calls: express stock BUY signals as long-call purchases.
+        if (ctx.plan.instrument == "calls" and d.action == "BUY"
+                and not is_option(d.symbol)):
+            translated = translate_to_calls(d, client,
+                                            float(account.get("equity", 0.0)),
+                                            ctx.plan)
+            if translated is None:
+                ledger.record("risk_reject", {"symbol": d.symbol, "action": "BUY",
+                                              "reason": "no viable call contract"})
+                continue
+            d = translated
+        if is_option(d.symbol):
+            contract = (client.quotes([d.symbol]) or {}).get(d.symbol) or {}
+            est_price = (contract.get("ask") if d.action == "BUY"
+                         else contract.get("bid"))
+        else:
+            quote = quotes.get(d.symbol) or {}
+            est_price = quote.get("ask") if d.action == "BUY" else quote.get("bid")
         if not est_price:
             ledger.record("risk_reject", {"symbol": d.symbol, "action": d.action,
                                           "reason": "no quote available"})

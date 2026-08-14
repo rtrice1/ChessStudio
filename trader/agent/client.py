@@ -122,3 +122,10 @@ class BrokerClient:
         symbols_str = ",".join(symbols)
         path = f"/v1/marketdata/news?symbols={symbols_str}&limit={limit}"
         return self._request("GET", path)
+
+    def chain(self, symbol: str, expiry: str | None = None) -> dict:
+        """Get the options chain for an underlying (nearest expiry default)."""
+        path = f"/v1/marketdata/chains?symbol={symbol}"
+        if expiry:
+            path += f"&expiry={expiry}"
+        return self._request("GET", path)

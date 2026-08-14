@@ -32,7 +32,7 @@ from agent.gut import Gut                       # noqa: E402
 from agent.ledger import Ledger                 # noqa: E402
 from agent.poller import poll_once              # noqa: E402
 from agent.strategist import (                  # noqa: E402
-    DayPlan, SessionContext, decide, execute, flatten_all,
+    DayPlan, SessionContext, decide, execute, flatten_all, option_exits,
 )
 from mockschwab.server import create_server     # noqa: E402
 
@@ -57,6 +57,8 @@ def main() -> int:
     ap.add_argument("--starting-cash", type=float, default=100_000.0)
     ap.add_argument("--data-dir", default=os.path.join(os.path.dirname(__file__), "..", "data"))
     ap.add_argument("--desk-dir", default=os.path.join(os.path.dirname(__file__), "..", "desk_state"))
+    ap.add_argument("--instrument", choices=["shares", "calls"], default="shares",
+                    help="express breakout signals as stock or long 0DTE calls")
     args = ap.parse_args()
 
     server = create_server(port=args.port, seed=args.seed,
@@ -72,7 +74,8 @@ def main() -> int:
     start = client.account()
     # The ledger persists across days; count this session's rejects only.
     rejects_at_open = ledger.summary()["kind_counts"].get("risk_reject", 0)
-    ctx = SessionContext(day_open_equity=float(start["equity"]), plan=DayPlan())
+    ctx = SessionContext(day_open_equity=float(start["equity"]),
+                         plan=DayPlan(instrument=args.instrument))
     ledger.record("session_start", {"equity": start["equity"], "seed": args.seed,
                                     "plan": ctx.plan.rationale})
     print(f"day open  | equity {start['equity']:.2f} | plan: {ctx.plan.rationale}")
@@ -133,6 +136,8 @@ def main() -> int:
                 decisions = flatten_all(snapshot["account"], "end of day")
             else:
                 decisions = decide(snapshot, ctx)
+                # Premium stops/targets on held contracts, every cycle.
+                decisions += option_exits(snapshot["account"], client, ctx.plan)
             executed = execute(decisions, snapshot, ctx, client, ledger)
             if executed or cycle % 10 == 0 or cycle == args.cycles:
                 account = client.account()

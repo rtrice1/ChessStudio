@@ -6,7 +6,15 @@ file is a human decision.
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
+
+# OCC-style option symbol: ROOT + YYMMDD + C/P + strike*1000 (8 digits).
+_OCC_RE = re.compile(r"^[A-Z]{1,6}\d{6}[CP]\d{8}$")
+
+
+def is_option(symbol: str) -> bool:
+    return bool(_OCC_RE.match(symbol or ""))
 
 
 @dataclass(frozen=True)
@@ -26,6 +34,11 @@ class RiskLimits:
     # Day-trading: no new entries after this fraction of the session has
     # elapsed (0.9 of a 6.5h session = ~15:05 ET). Exits are always allowed.
     entry_cutoff_session_pct: float = 0.9
+    # Options: LONG contracts only, and every dollar of premium is treated
+    # as if it goes to zero (for a long option, it can). Per-order and
+    # total premium-at-risk caps as fractions of equity.
+    max_option_premium_pct: float = 0.02
+    max_total_option_premium_pct: float = 0.06
 
 
 @dataclass
@@ -125,6 +138,31 @@ def check_order(
 
     if notional > cash - limits.min_cash_reserve:
         return RiskVerdict(False, f"insufficient cash: need {notional:.2f}, have {cash:.2f}")
+
+    if is_option(symbol):
+        # Long-options-only is structural (the engine cannot short), so the
+        # BUY checks are about premium at risk: this order's premium, plus
+        # premium already deployed across all option positions, both capped.
+        if notional > limits.max_option_premium_pct * equity:
+            return RiskVerdict(
+                False,
+                f"option premium {notional:.2f} exceeds "
+                f"{limits.max_option_premium_pct:.0%} of equity per order",
+            )
+        deployed = sum(float(p.get("marketValue", 0.0))
+                       for p in account.get("positions", [])
+                       if is_option(p.get("symbol", "")))
+        if deployed + notional > limits.max_total_option_premium_pct * equity:
+            return RiskVerdict(
+                False,
+                f"total option premium would be "
+                f"{(deployed + notional) / equity:.2%} of equity, cap is "
+                f"{limits.max_total_option_premium_pct:.0%}",
+            )
+        if notional > cash - limits.min_cash_reserve:
+            return RiskVerdict(False,
+                               f"insufficient cash for premium {notional:.2f}")
+        return RiskVerdict(True, "option premium within caps")
 
     current_pos_value = float(positions.get(symbol, {}).get("marketValue", 0.0))
     if current_pos_value + notional > limits.max_position_pct * equity:

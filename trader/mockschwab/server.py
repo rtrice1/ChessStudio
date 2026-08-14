@@ -10,6 +10,7 @@ from typing import Optional
 from .accounts import AccountEngine
 from .market import MarketSim
 from .news import NewsFeed
+from .options import OptionsLayer, MarketWithOptions
 
 
 # Global server state
@@ -33,6 +34,8 @@ class SchwabRequestHandler(BaseHTTPRequestHandler):
                 self._handle_quotes(query_string)
             elif path == "/v1/marketdata/pricehistory":
                 self._handle_price_history(query_string)
+            elif path == "/v1/marketdata/chains":
+                self._handle_chains(query_string)
             elif path == "/v1/marketdata/news":
                 self._handle_news(query_string)
             elif path.startswith("/v1/accounts/"):
@@ -107,6 +110,25 @@ class SchwabRequestHandler(BaseHTTPRequestHandler):
             self.send_error(400, history["error"])
         else:
             self._send_json(200, history)
+
+    def _handle_chains(self, query_string: dict) -> None:
+        """GET /v1/marketdata/chains?symbol=AAPL&expiry=2026-08-21"""
+        symbol = query_string.get("symbol", [""])[0]
+        expiry = query_string.get("expiry", [None])[0]
+
+        if not symbol:
+            self.send_error(400, "Missing symbol parameter")
+            return
+
+        # Get the options layer from the market wrapper
+        if hasattr(_market, "options"):
+            chain = _market.options.chain(symbol, expiry)
+            if "error" in chain:
+                self._send_json(400, chain)
+            else:
+                self._send_json(200, chain)
+        else:
+            self.send_error(400, "Options not available")
 
     def _handle_news(self, query_string: dict) -> None:
         """GET /v1/marketdata/news?symbols=AAPL,MSFT&limit=10"""
@@ -265,9 +287,16 @@ def create_server(
     """
     global _market, _engine, _news_feed
 
-    _market = MarketSim(seed=seed, time_scale=time_scale)
+    # Create market simulator
+    market_sim = MarketSim(seed=seed, time_scale=time_scale)
+
+    # Wrap with options layer
+    options_layer = OptionsLayer(market_sim, seed=seed)
+    _market = MarketWithOptions(market_sim, options_layer)
+
+    # Create engine with wrapped market
     _engine = AccountEngine(_market, starting_cash=starting_cash)
-    _news_feed = NewsFeed(_market, seed=seed)
+    _news_feed = NewsFeed(market_sim, seed=seed)
 
     server = ThreadingHTTPServer((host, port), SchwabRequestHandler)
     return server

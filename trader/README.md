@@ -27,6 +27,7 @@ trader/
 │   ├── market.py        #   synthetic market: GBM + regime shifts, seedable, time-scalable
 │   ├── accounts.py      #   cash account, market/limit orders, fills, P&L
 │   ├── news.py          #   synthetic news + message boards — misleading BY CONSTRUCTION
+│   ├── options.py       #   Black-Scholes chains, greeks, honestly-wide spreads
 │   └── server.py        #   /v1/marketdata/*, /v1/accounts/* endpoints
 ├── agent/
 │   ├── client.py        # broker HTTP client (mock now, real Schwab later)
@@ -51,6 +52,7 @@ trader/
 ├── SPEC/
 │   ├── AGENTS.md        # the fleet: tiers, the daily clock, authority, PDT rules, gates
 │   ├── STRATEGY.md      # ORB+VWAP baseline, benchmarks, honest caveats
+│   ├── OPTIONS.md       # options day trading: long-only, premium caps, the honest odds
 │   ├── PERSISTENCE.md   # what a server can and can't give Claude; desk conventions
 │   └── NEEDS.md         # what Claude needs from the human, and the deal terms
 └── tests/
