@@ -26,6 +26,7 @@ trader/
 ├── mockschwab/          # Mock Charles Schwab Trader API (stdlib HTTP server)
 │   ├── market.py        #   synthetic market: GBM + regime shifts, seedable, time-scalable
 │   ├── accounts.py      #   cash account, market/limit orders, fills, P&L
+│   ├── news.py          #   synthetic news + message boards — misleading BY CONSTRUCTION
 │   └── server.py        #   /v1/marketdata/*, /v1/accounts/* endpoints
 ├── agent/
 │   ├── client.py        # broker HTTP client (mock now, real Schwab later)
@@ -33,6 +34,8 @@ trader/
 │   ├── indicators.py    # SMA/EMA/RSI/ATR + VWAP, opening range, day stats
 │   ├── risk.py          # HARD limits — every order passes through here, in code
 │   ├── strategist.py    # DayPlan (the LLM's interface) + mechanical intraday engine
+│   ├── daytype.py       # day taxonomy: trend / chop / open-spike-settle fingerprinting
+│   ├── gut.py           # gut feel, made honest: remembered days -> hunches with sample size
 │   ├── desk.py          # persistent desk memory: journal, beliefs, identity
 │   ├── ledger.py        # append-only JSONL audit trail
 │   └── run_day.py       # simulate one full trading day, flatten at close, journal it

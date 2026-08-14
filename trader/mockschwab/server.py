@@ -9,11 +9,13 @@ from typing import Optional
 
 from .accounts import AccountEngine
 from .market import MarketSim
+from .news import NewsFeed
 
 
 # Global server state
 _market: Optional[MarketSim] = None
 _engine: Optional[AccountEngine] = None
+_news_feed: Optional[NewsFeed] = None
 _engine_lock = threading.Lock()
 
 
@@ -31,6 +33,8 @@ class SchwabRequestHandler(BaseHTTPRequestHandler):
                 self._handle_quotes(query_string)
             elif path == "/v1/marketdata/pricehistory":
                 self._handle_price_history(query_string)
+            elif path == "/v1/marketdata/news":
+                self._handle_news(query_string)
             elif path.startswith("/v1/accounts/"):
                 self._handle_account_get(path, query_string)
             else:
@@ -103,6 +107,26 @@ class SchwabRequestHandler(BaseHTTPRequestHandler):
             self.send_error(400, history["error"])
         else:
             self._send_json(200, history)
+
+    def _handle_news(self, query_string: dict) -> None:
+        """GET /v1/marketdata/news?symbols=AAPL,MSFT&limit=10"""
+        symbols_param = query_string.get("symbols", [""])
+        symbols = symbols_param[0].split(",") if symbols_param[0] else []
+        limit_str = query_string.get("limit", ["10"])[0]
+
+        try:
+            limit = int(limit_str)
+        except ValueError:
+            limit = 10
+
+        result = {}
+        for symbol in symbols:
+            if symbol:
+                result[symbol] = _news_feed.items(symbol, limit)
+            else:
+                result[symbol] = []
+
+        self._send_json(200, result)
 
     def _handle_account_get(self, path: str, query_string: dict) -> None:
         """
@@ -239,10 +263,11 @@ def create_server(
     Returns:
         ThreadingHTTPServer instance.
     """
-    global _market, _engine
+    global _market, _engine, _news_feed
 
     _market = MarketSim(seed=seed, time_scale=time_scale)
     _engine = AccountEngine(_market, starting_cash=starting_cash)
+    _news_feed = NewsFeed(_market, seed=seed)
 
     server = ThreadingHTTPServer((host, port), SchwabRequestHandler)
     return server

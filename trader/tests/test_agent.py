@@ -11,7 +11,7 @@ from urllib.error import HTTPError
 from agent.client import BrokerClient, BrokerError
 from agent.indicators import atr, day_stats, ema, latest_day, opening_range, pct_change, rsi, sma, summarize, vwap
 from agent.ledger import Ledger
-from agent.poller import compute_alerts
+from agent.poller import compute_alerts, sentiment_score, summarize_news
 
 
 class TestIndicators(unittest.TestCase):
@@ -671,6 +671,222 @@ class TestAlerts(unittest.TestCase):
         symbols = {a["symbol"] for a in alerts}
         self.assertIn("AAPL", symbols)
         self.assertIn("MSFT", symbols)
+
+
+class TestNews(unittest.TestCase):
+    """Test news functionality."""
+
+    def test_sentiment_score_positive(self):
+        """Test sentiment_score for positive keywords."""
+        result = sentiment_score("Stock rises to new highs")
+        self.assertEqual(result, 1)
+
+    def test_sentiment_score_negative(self):
+        """Test sentiment_score for negative keywords."""
+        result = sentiment_score("Stock falls sharply")
+        self.assertEqual(result, -1)
+
+    def test_sentiment_score_neutral(self):
+        """Test sentiment_score for neutral headline."""
+        result = sentiment_score("Company reports earnings")
+        self.assertEqual(result, 0)
+
+    def test_sentiment_score_mixed_equal(self):
+        """Test sentiment_score with equal positive and negative keywords."""
+        result = sentiment_score("Stock beat but drop today")
+        self.assertEqual(result, 0)
+
+    def test_sentiment_score_multiple_positive(self):
+        """Test sentiment_score with multiple positive keywords."""
+        result = sentiment_score("Stock rises and beats expectations, upgrade coming")
+        self.assertEqual(result, 1)
+
+    def test_sentiment_score_multiple_negative(self):
+        """Test sentiment_score with multiple negative keywords."""
+        result = sentiment_score("Stock falls and disappoints, downgrade expected")
+        self.assertEqual(result, -1)
+
+    def test_sentiment_score_case_insensitive(self):
+        """Test sentiment_score case insensitivity."""
+        result1 = sentiment_score("Stock RISES")
+        result2 = sentiment_score("Stock rises")
+        self.assertEqual(result1, result2)
+        self.assertEqual(result1, 1)
+
+    def test_summarize_news_empty(self):
+        """Test summarize_news with empty news."""
+        news = {}
+        result = summarize_news(news)
+        self.assertEqual(result, {})
+
+    def test_summarize_news_empty_items(self):
+        """Test summarize_news with empty items list."""
+        news = {"AAPL": []}
+        result = summarize_news(news)
+        self.assertIn("AAPL", result)
+        self.assertEqual(result["AAPL"]["count"], 0)
+        self.assertEqual(result["AAPL"]["wire_count"], 0)
+        self.assertEqual(result["AAPL"]["board_count"], 0)
+        self.assertEqual(result["AAPL"]["wire_sentiment"], 0)
+        self.assertEqual(result["AAPL"]["board_sentiment"], 0)
+        self.assertIsNone(result["AAPL"]["latest_headline"])
+
+    def test_summarize_news_single_symbol(self):
+        """Test summarize_news with single symbol."""
+        news = {
+            "AAPL": [
+                {"id": "1", "symbol": "AAPL", "source": "wire", "headline": "Stock rises", "published": "2024-01-01"},
+                {"id": "2", "symbol": "AAPL", "source": "board", "headline": "Disappointing news", "published": "2024-01-02"},
+            ]
+        }
+
+        result = summarize_news(news)
+        self.assertIn("AAPL", result)
+        self.assertEqual(result["AAPL"]["count"], 2)
+        self.assertEqual(result["AAPL"]["wire_count"], 1)
+        self.assertEqual(result["AAPL"]["board_count"], 1)
+        self.assertEqual(result["AAPL"]["wire_sentiment"], 1)
+        self.assertEqual(result["AAPL"]["board_sentiment"], -1)
+        self.assertEqual(result["AAPL"]["latest_headline"], "Stock rises")
+
+    def test_summarize_news_multiple_symbols(self):
+        """Test summarize_news with multiple symbols."""
+        news = {
+            "AAPL": [
+                {"id": "1", "symbol": "AAPL", "source": "wire", "headline": "Stock rises", "published": "2024-01-01"},
+            ],
+            "MSFT": [
+                {"id": "2", "symbol": "MSFT", "source": "board", "headline": "Disappointing news", "published": "2024-01-02"},
+            ],
+        }
+
+        result = summarize_news(news)
+        self.assertEqual(len(result), 2)
+        self.assertIn("AAPL", result)
+        self.assertIn("MSFT", result)
+
+    def test_news_burst_alert(self):
+        """Test news_burst alert when count >= 4."""
+        news = {
+            "AAPL": [
+                {"id": "1", "symbol": "AAPL", "source": "wire", "headline": "News 1", "published": "2024-01-01"},
+                {"id": "2", "symbol": "AAPL", "source": "wire", "headline": "News 2", "published": "2024-01-02"},
+                {"id": "3", "symbol": "AAPL", "source": "board", "headline": "News 3", "published": "2024-01-03"},
+                {"id": "4", "symbol": "AAPL", "source": "board", "headline": "News 4", "published": "2024-01-04"},
+            ]
+        }
+
+        indicators = {"AAPL": {}}
+        quotes = {"AAPL": {}}
+
+        alerts = compute_alerts(indicators, quotes, news=news)
+
+        burst_alerts = [a for a in alerts if a["kind"] == "news_burst"]
+        self.assertEqual(len(burst_alerts), 1)
+        self.assertEqual(burst_alerts[0]["symbol"], "AAPL")
+        self.assertIn("count=4", burst_alerts[0]["detail"])
+
+    def test_news_burst_alert_threshold(self):
+        """Test no news_burst alert when count < 4."""
+        news = {
+            "AAPL": [
+                {"id": "1", "symbol": "AAPL", "source": "wire", "headline": "News 1", "published": "2024-01-01"},
+                {"id": "2", "symbol": "AAPL", "source": "wire", "headline": "News 2", "published": "2024-01-02"},
+                {"id": "3", "symbol": "AAPL", "source": "board", "headline": "News 3", "published": "2024-01-03"},
+            ]
+        }
+
+        indicators = {"AAPL": {}}
+        quotes = {"AAPL": {}}
+
+        alerts = compute_alerts(indicators, quotes, news=news)
+
+        burst_alerts = [a for a in alerts if a["kind"] == "news_burst"]
+        self.assertEqual(len(burst_alerts), 0)
+
+    def test_sentiment_divergence_alert(self):
+        """Test sentiment_divergence alert when wire and board sentiments disagree."""
+        news = {
+            "AAPL": [
+                {"id": "1", "symbol": "AAPL", "source": "wire", "headline": "Stock rises", "published": "2024-01-01"},
+                {"id": "2", "symbol": "AAPL", "source": "board", "headline": "Stock falls", "published": "2024-01-02"},
+            ]
+        }
+
+        indicators = {"AAPL": {}}
+        quotes = {"AAPL": {}}
+
+        alerts = compute_alerts(indicators, quotes, news=news)
+
+        div_alerts = [a for a in alerts if a["kind"] == "sentiment_divergence"]
+        self.assertEqual(len(div_alerts), 1)
+        self.assertEqual(div_alerts[0]["symbol"], "AAPL")
+        self.assertIn("disagree", div_alerts[0]["detail"])
+
+    def test_sentiment_divergence_no_alert_same_sign(self):
+        """Test no sentiment_divergence alert when sentiments agree."""
+        news = {
+            "AAPL": [
+                {"id": "1", "symbol": "AAPL", "source": "wire", "headline": "Stock rises", "published": "2024-01-01"},
+                {"id": "2", "symbol": "AAPL", "source": "board", "headline": "Stock rises", "published": "2024-01-02"},
+            ]
+        }
+
+        indicators = {"AAPL": {}}
+        quotes = {"AAPL": {}}
+
+        alerts = compute_alerts(indicators, quotes, news=news)
+
+        div_alerts = [a for a in alerts if a["kind"] == "sentiment_divergence"]
+        self.assertEqual(len(div_alerts), 0)
+
+    def test_sentiment_divergence_no_alert_one_zero(self):
+        """Test no sentiment_divergence alert when one sentiment is zero."""
+        news = {
+            "AAPL": [
+                {"id": "1", "symbol": "AAPL", "source": "wire", "headline": "Stock rises", "published": "2024-01-01"},
+                {"id": "2", "symbol": "AAPL", "source": "board", "headline": "No news here", "published": "2024-01-02"},
+            ]
+        }
+
+        indicators = {"AAPL": {}}
+        quotes = {"AAPL": {}}
+
+        alerts = compute_alerts(indicators, quotes, news=news)
+
+        div_alerts = [a for a in alerts if a["kind"] == "sentiment_divergence"]
+        self.assertEqual(len(div_alerts), 0)
+
+    @patch("urllib.request.urlopen")
+    def test_client_news_url_construction(self, mock_urlopen):
+        """Test client.news URL construction."""
+        response_data = json.dumps({"AAPL": [], "MSFT": []})
+        mock_urlopen.return_value.__enter__.return_value.read.return_value = response_data.encode()
+
+        client = BrokerClient("http://localhost:8788")
+        result = client.news(["AAPL", "MSFT"], limit=10)
+
+        self.assertTrue(mock_urlopen.called)
+        call_args = mock_urlopen.call_args
+        url = call_args[0][0].full_url if hasattr(call_args[0][0], "full_url") else str(call_args[0][0])
+        self.assertIn("news", url)
+        self.assertIn("AAPL", url)
+        self.assertIn("MSFT", url)
+        self.assertIn("limit=10", url)
+
+    @patch("urllib.request.urlopen")
+    def test_client_news_default_limit(self, mock_urlopen):
+        """Test client.news with default limit."""
+        response_data = json.dumps({"AAPL": []})
+        mock_urlopen.return_value.__enter__.return_value.read.return_value = response_data.encode()
+
+        client = BrokerClient("http://localhost:8788")
+        result = client.news(["AAPL"])
+
+        self.assertTrue(mock_urlopen.called)
+        call_args = mock_urlopen.call_args
+        url = call_args[0][0].full_url if hasattr(call_args[0][0], "full_url") else str(call_args[0][0])
+        self.assertIn("limit=10", url)
 
 
 if __name__ == "__main__":

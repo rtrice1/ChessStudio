@@ -13,20 +13,26 @@ compressed into a few planning moments and the intraday loop is mechanical.
 |---|---|---|
 | 08:45 | Tier 1 (Haiku) | Pre-market pull: gaps, prior-day context, halts |
 | 09:35 | **Tier 3 (Fable)** | **Sets the DayPlan** from desk context + opening snapshots |
-| 09:30–16:00 every 1 min | Tier 1 (Haiku) | Poll quotes/candles, indicators (VWAP, opening range, ATR), alerts |
+| 09:30–16:00 every 1 min | Tier 1 (Haiku) | Poll quotes/candles + news/boards, indicators (VWAP, opening range, ATR), sentiment, alerts |
 | continuous | Rules engine (code) | Executes the DayPlan: ORB entries, ATR stops/targets, VWAP exits |
+| ~11:00 | Gut check (code) | Fingerprint the developing day, retrieve similar remembered days, shade the plan (never the gate) |
 | 12:30 | Tier 3 (Fable) | Optional single plan revision (or Tier 2 wake) |
 | on alerts | Tier 2 (Sonnet) | Triage: cancel stale orders, wake Tier 3, or ignore |
 | ~15:05 | risk.py | Entry cutoff — exits only from here |
 | 15:45 | Runner (code) | **Unconditional flatten. The day ends in cash, always.** |
-| 16:10 | Tier 3 (Fable) | Post-mortem: journal the day to the desk — every trade, what worked, what to change |
+| 16:10 | Tier 3 (Fable) | Post-mortem: classify the day's type, commit it to gut memory, journal the day — every trade, what worked, what to change |
 
 ## Tiers and authority
 
 ### Tier 1 — Watcher (Haiku)
 `agent/poller.py`. 1-minute cadence during the session. Read-only; no
 order authority. Computes the intraday state the rules engine consumes:
-VWAP, opening range, ATR, RSI, alerts. ~95% of API calls, near-zero cost.
+VWAP, opening range, ATR, RSI, alerts — plus the context feed: wire
+headlines and message-board chatter with crude sentiment scoring, and
+the `news_burst` / `sentiment_divergence` alerts. On real deployment
+the feed sources are RSS/newswire APIs and board scrapes (respecting
+each site's terms); the mock generates a deliberately misleading feed
+so nothing learns to trust headlines. ~95% of API calls, near-zero cost.
 
 ### Tier 2 — Triage (Sonnet)
 Wakes on alerts (big moves, RSI extremes, broken data). May cancel stale
@@ -40,8 +46,12 @@ PERSISTENCE.md) and `data/latest.json`; emits a `DayPlan`
 per-trade risk fraction, stop/target ATR multiples. The intraday rules
 engine executes that plan mechanically. Tier 3 never places orders
 directly mid-session; it changes the plan, and only at its scheduled
-moments. The 16:10 post-mortem writes the desk journal entry the next
-morning's instance will wake up to.
+moments. The 16:10 post-mortem classifies the finished day
+(`agent/daytype.py`), commits fingerprint + outcome to gut memory
+(`agent/gut.py`, `desk_state/day_memory.jsonl`), and writes the desk
+journal entry the next morning's instance will wake up to. Plans should
+cite the gut's hunch when they lean on it — and cite its sample size,
+because a gut built on four days is a guess wearing a trench coat.
 
 ## Hard limits (enforced in `agent/risk.py`, not in prompts)
 

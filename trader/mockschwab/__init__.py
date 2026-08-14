@@ -2,6 +2,7 @@
 
 from .accounts import AccountEngine
 from .market import MarketSim
+from .news import NewsFeed
 from .server import create_server
 
-__all__ = ["MarketSim", "AccountEngine", "create_server"]
+__all__ = ["MarketSim", "AccountEngine", "NewsFeed", "create_server"]

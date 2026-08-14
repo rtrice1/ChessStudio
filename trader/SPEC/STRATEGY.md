@@ -18,6 +18,41 @@ large-cap watchlist. This is the default `DayPlan` and runs with no LLM:
   everything flattened by 15:45 (the runner enforces), flat overnight,
   every night. Max 40 trades/day.
 
+## The day taxonomy and the gut
+
+Days fit patterns — the human partner traded through enough of them to
+insist on this, and the desk is built to learn it rather than assume it.
+`agent/daytype.py` fingerprints the developing day (opening volatility
+vs. the rest, directional efficiency, breadth, VWAP adherence) and maps
+it to a coarse folk taxonomy: `trend_up`, `trend_down`,
+`open_spike_settle` (the violent 09:30–10:00 that settles in), `chop`,
+`mixed`. Every finished day is recorded — fingerprint, label, outcome —
+in `desk_state/day_memory.jsonl`.
+
+`agent/gut.py` is gut feel made honest: at ~11:00, once the open has
+resolved, it retrieves the most similar remembered days and reports what
+they were and how they went ("smells like open_spike_settle; 4 similar
+days averaged −0.8%"). A confident, well-grounded hunch of a bad day
+type shades the plan (risk halved on suspected chop); it never overrides
+the risk gate, and it always states how many days of experience back it.
+A gut built on four days says so out loud. The gut gets smarter the same
+way a trader's does — by trading days and remembering them — except its
+memory survives instance turnover and never edits itself after the fact.
+
+## News and message boards — context, held at arm's length
+
+Working hypothesis, straight from the human's experience: **the news is
+almost always misleading.** So the feed is treated as crowd-state, not
+truth: Tier 1 pulls headlines (wire) and message-board chatter (board),
+scores crude sentiment on each, and alerts on two conditions —
+`news_burst` (attention is arriving) and `sentiment_divergence` (wire
+and board disagree — someone is wrong). The mock feed is misleading *by
+construction* (~30% aligned with actual price direction, ~40% noise,
+~30% inverted, board posts momentum-chasing and lagging), so any
+strategy that naively trades headlines loses in sim before it can lose
+for real. Whether news is a fade signal, a volatility signal, or pure
+noise is a question for the accumulated ledger, not an assumption.
+
 ## What Tier 3 ("me") adds when live
 
 The rules can't read; the plan can. `DayPlan` is the entire interface:

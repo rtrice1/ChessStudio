@@ -114,3 +114,11 @@ class BrokerClient:
         """Cancel an order."""
         path = f"/v1/accounts/{self.account_id}/orders/{order_id}"
         return self._request("DELETE", path)
+
+    def news(self, symbols: list[str], limit: int = 10) -> dict:
+        """Get news for symbols."""
+        if not symbols:
+            return {}
+        symbols_str = ",".join(symbols)
+        path = f"/v1/marketdata/news?symbols={symbols_str}&limit={limit}"
+        return self._request("GET", path)

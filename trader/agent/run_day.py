@@ -25,7 +25,9 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from agent.client import BrokerClient           # noqa: E402
+from agent.daytype import classify_day, features_from_client  # noqa: E402
 from agent.desk import Desk                     # noqa: E402
+from agent.gut import Gut                       # noqa: E402
 from agent.ledger import Ledger                 # noqa: E402
 from agent.poller import poll_once              # noqa: E402
 from agent.strategist import (                  # noqa: E402
@@ -37,6 +39,8 @@ DEFAULT_SYMBOLS = ["AAPL", "MSFT", "NVDA", "GOOGL", "AMZN",
                    "SPY", "QQQ", "TSLA", "JPM", "XOM"]
 # Flatten when this fraction of the session has elapsed (~15:45 ET).
 FLATTEN_AT = 0.96
+# Ask the gut what today smells like once the open has resolved (~11:00 ET).
+GUT_CHECK_AT = 0.25
 
 
 def main() -> int:
@@ -62,6 +66,7 @@ def main() -> int:
     client = BrokerClient(f"http://127.0.0.1:{args.port}")
     ledger = Ledger(os.path.join(args.data_dir, "ledger.jsonl"))
     desk = Desk(args.desk_dir)
+    gut = Gut(os.path.join(args.desk_dir, "day_memory.jsonl"))
 
     start = client.account()
     ctx = SessionContext(day_open_equity=float(start["equity"]), plan=DayPlan())
@@ -70,10 +75,27 @@ def main() -> int:
     print(f"day open  | equity {start['equity']:.2f} | plan: {ctx.plan.rationale}")
 
     day_stopped = False
+    gut_checked = False
     for cycle in range(1, args.cycles + 1):
         ctx.session_pct = cycle / args.cycles
         try:
             snapshot = poll_once(client, DEFAULT_SYMBOLS, args.data_dir)
+            if not gut_checked and ctx.session_pct >= GUT_CHECK_AT:
+                gut_checked = True
+                features = features_from_client(client, DEFAULT_SYMBOLS)
+                if features:
+                    hunch = gut.hunch(features)
+                    ledger.record("gut_check", {"features": features, "hunch": hunch})
+                    print(f"{ctx.session_pct:5.0%} | gut check: {hunch['note']}")
+                    # A hunch shades the plan; it never overrides the gate.
+                    if (hunch["suspected_day_type"] in ("chop", "open_spike_settle")
+                            and hunch["confidence"] >= 0.5 and hunch["based_on"] >= 3):
+                        ctx.plan.per_trade_risk_pct /= 2
+                        ctx.plan.rationale += (
+                            f" | gut: {hunch['suspected_day_type']} suspected, "
+                            f"risk halved")
+                        print(f"      | plan shaded: per-trade risk halved "
+                              f"({hunch['suspected_day_type']})")
             equity = float(snapshot["account"].get("equity", 0.0))
             drawdown = (ctx.day_open_equity - equity) / ctx.day_open_equity
             if not day_stopped and drawdown >= ctx.limits.daily_loss_halt_pct:
@@ -107,6 +129,19 @@ def main() -> int:
     open_pos = [p for p in final["positions"] if p["quantity"]]
     pnl = float(final["equity"]) - float(start["equity"])
     summary = ledger.summary()
+
+    # Fingerprint the finished day and commit it to gut memory.
+    day_type = None
+    features = features_from_client(client, DEFAULT_SYMBOLS)
+    if features:
+        classification = classify_day(features)
+        day_type = classification["day_type"]
+        gut.record_day(features, day_type,
+                       {"pnl_pct": round(pnl / float(start["equity"]), 6),
+                        "trades": ctx.trades_today,
+                        "daily_stop_hit": day_stopped})
+        print(f"day type  | {day_type} "
+              f"(confidence {classification['confidence']}) -> gut memory")
     ledger.record("session_end", {"equity": final["equity"], "pnl": pnl,
                                   "trades": ctx.trades_today,
                                   "flat": not open_pos,
@@ -119,6 +154,7 @@ def main() -> int:
         "plan": ctx.plan.rationale,
         "risk_rejects": summary["kind_counts"].get("risk_reject", 0),
         "daily_stop_hit": day_stopped,
+        "day_type": day_type,
         "seed": args.seed,
     })
 

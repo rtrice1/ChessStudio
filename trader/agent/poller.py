@@ -16,12 +16,71 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 
+def sentiment_score(headline: str) -> int:
+    """
+    Compute sentiment score from headline.
+    Returns +1 for positive, -1 for negative, 0 for neutral.
+    Uses crude keyword lists with case-insensitive matching.
+    """
+    positive = ["rise", "rises", "surge", "beat", "beats", "upbeat", "raise", "bullish", "moon", "loading", "brewing", "breakout", "upgrade"]
+    negative = ["slip", "slips", "fall", "falls", "drop", "cut", "cuts", "disappointing", "bearish", "cooked", "bag", "coping", "downgrade", "weighs", "plunge"]
+
+    headline_lower = headline.lower()
+
+    pos_count = sum(1 for word in positive if word in headline_lower)
+    neg_count = sum(1 for word in negative if word in headline_lower)
+
+    if pos_count > neg_count:
+        return 1
+    elif neg_count > pos_count:
+        return -1
+    else:
+        return 0
+
+
+def summarize_news(news: dict) -> dict:
+    """
+    Summarize news across symbols.
+    Returns per-symbol: count, wire_count, board_count, wire_sentiment, board_sentiment, latest_headline.
+    """
+    summary = {}
+    for symbol, items in news.items():
+        if not items:
+            summary[symbol] = {
+                "count": 0,
+                "wire_count": 0,
+                "board_count": 0,
+                "wire_sentiment": 0,
+                "board_sentiment": 0,
+                "latest_headline": None,
+            }
+            continue
+
+        wire_items = [item for item in items if item.get("source") == "wire"]
+        board_items = [item for item in items if item.get("source") == "board"]
+
+        wire_sentiment = sum(sentiment_score(item.get("headline", "")) for item in wire_items)
+        board_sentiment = sum(sentiment_score(item.get("headline", "")) for item in board_items)
+
+        summary[symbol] = {
+            "count": len(items),
+            "wire_count": len(wire_items),
+            "board_count": len(board_items),
+            "wire_sentiment": wire_sentiment,
+            "board_sentiment": board_sentiment,
+            "latest_headline": items[0].get("headline") if items else None,
+        }
+
+    return summary
+
+
 def compute_alerts(
     indicators: dict[str, dict],
     quotes: dict[str, dict],
     prev_snapshot: dict | None = None,
+    news: dict | None = None,
 ) -> list[dict]:
-    """Compute alerts from indicators, quotes, and previous snapshot."""
+    """Compute alerts from indicators, quotes, previous snapshot, and news."""
     alerts = []
 
     for symbol, summary in indicators.items():
@@ -74,6 +133,28 @@ def compute_alerts(
                                 }
                             )
 
+    # News alerts
+    if news:
+        news_summary = summarize_news(news)
+        for symbol, summary in news_summary.items():
+            # News burst alert
+            if summary["count"] >= 4:
+                alerts.append({
+                    "symbol": symbol,
+                    "kind": "news_burst",
+                    "detail": f"count={summary['count']}, wire_sentiment={summary['wire_sentiment']}, board_sentiment={summary['board_sentiment']}",
+                })
+
+            # Sentiment divergence alert
+            wire_sent = summary["wire_sentiment"]
+            board_sent = summary["board_sentiment"]
+            if wire_sent != 0 and board_sent != 0 and (wire_sent > 0) != (board_sent > 0):
+                alerts.append({
+                    "symbol": symbol,
+                    "kind": "sentiment_divergence",
+                    "detail": "wire and board disagree — someone is wrong",
+                })
+
     return alerts
 
 
@@ -97,6 +178,14 @@ def poll_once(client: BrokerClient, symbols: list[str], data_dir: str) -> dict:
         # Fetch account
         account_data = client.account()
 
+        # Fetch news
+        news = {}
+        try:
+            news = client.news(symbols, limit=10)
+        except Exception as e:
+            logger.warning(f"Error fetching news: {e}")
+            news = {}
+
         # Load previous snapshot if available for alert detection
         prev_snapshot = None
         latest_path = Path(data_dir) / "latest.json"
@@ -108,16 +197,21 @@ def poll_once(client: BrokerClient, symbols: list[str], data_dir: str) -> dict:
                 logger.warning(f"Could not load previous snapshot: {e}")
 
         # Compute alerts
-        alerts = compute_alerts(indicators, quotes_data, prev_snapshot)
+        alerts = compute_alerts(indicators, quotes_data, prev_snapshot, news)
 
         # Build snapshot
         timestamp = datetime.now(timezone.utc).isoformat()
+        news_summary = summarize_news(news)
         snapshot = {
             "timestamp": timestamp,
             "account": account_data,
             "quotes": quotes_data,
             "indicators": indicators,
             "alerts": alerts,
+            "news": {
+                "items": news,
+                "summary": news_summary,
+            },
         }
 
         # Create snapshots directory
