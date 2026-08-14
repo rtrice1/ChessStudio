@@ -43,6 +43,7 @@ trader/
 │   ├── backfill.py      # seed gut memory with hundreds of simulated day-shapes
 │   ├── desk.py          # persistent desk memory: journal, beliefs, identity
 │   ├── ledger.py        # append-only JSONL audit trail
+│   ├── metrics.py       # the scoreboard: expectancy, calibration, cost of judgment
 │   └── run_day.py       # simulate one full trading day, flatten at close, journal it
 ├── desk_state/
 │   └── identity.md      # what each strategist instance wakes up to

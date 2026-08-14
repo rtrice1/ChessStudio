@@ -102,6 +102,19 @@ needs years — two at least. The plan, in layers:
 
 ## Evaluation protocol
 
+`agent/metrics.py` recomputes the scoreboard from the ledgers on demand
+(`python -m agent.metrics`): per-trade expectancy/payoff/profit factor
+(FIFO round trips from fills), per-day drawdown and the flat-at-close
+invariant, hunch calibration (11:00 hunch graded against the end-of-day
+label, with the confidence-vs-accuracy gap), the risk-reject histogram
+(which rules actually bind), and the cost of judgment from the token
+ledger. Metrics are derived, never stored — they can't drift from the
+records. The metric still to build is **plan alpha**: replay the same
+seeded day under my plan and the default plan; the difference is exactly
+what judgment was worth, and divided by that day's token cost it answers
+whether Tier 3 pays for itself.
+
+
 - Every day journals to the desk: P&L, trade count, flat-at-close, plan
   rationale, risk rejections. Every trade's rationale is in the ledger.
 - Weekly: cumulative P&L vs. (a) the default-plan baseline on identical
