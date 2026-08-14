@@ -45,6 +45,9 @@ trader/
 │   ├── desk.py          # persistent desk memory: journal, beliefs, identity
 │   ├── ledger.py        # append-only JSONL audit trail
 │   ├── metrics.py       # the scoreboard: expectancy, calibration, cost of judgment
+│   ├── schwab.py        # REAL Schwab data client (read-only; orders structurally disabled)
+│   ├── shadow.py        # shadow broker: real quotes in, orders fill in a local book
+│   ├── run_live.py      # the live shadow day: wall-clock, market hours, real data
 │   └── run_day.py       # simulate one full trading day, flatten at close, journal it
 ├── desk_state/
 │   └── identity.md      # what each strategist instance wakes up to
