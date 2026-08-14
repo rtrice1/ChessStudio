@@ -1,0 +1,20 @@
+[Unit]
+Description=Trader strategist judgment slot (%i)
+After=trader-mock.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=@INSTALL_DIR@
+# Dry-run by default: without the anthropic SDK + ANTHROPIC_API_KEY this
+# writes the exact would-be prompt to data/invocations/ and estimated cost
+# to data/token_ledger.jsonl, spending nothing. To go live later:
+#   pip install anthropic ; set the key + TRADER_LLM_LIVE=1 in
+#   /etc/trader/llm.env (root-owned, mode 600).
+EnvironmentFile=-/etc/trader/llm.env
+ExecStart=/usr/bin/python3 -m agent.harness --slot %i --data-dir @INSTALL_DIR@/data --desk-dir @INSTALL_DIR@/desk_state
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=@INSTALL_DIR@
+
+[Install]
+WantedBy=multi-user.target

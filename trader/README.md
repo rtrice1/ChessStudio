@@ -37,6 +37,9 @@ trader/
 │   ├── daytype.py       # day taxonomy: trend / chop / open-spike-settle fingerprinting
 │   ├── gut.py           # gut feel, made honest: remembered days -> hunches with sample size
 │   ├── focus.py         # smart context: width + topics -> salience-scored prompt assembly
+│   ├── escalation.py    # WHETHER a judgment call exists — code decides, most moments: no
+│   ├── llm.py           # tiered Claude calls, hard daily token caps, dry-run, cost ledger
+│   ├── harness.py       # the judgment slots: focused prompt -> schema -> apply, clamped
 │   ├── backfill.py      # seed gut memory with hundreds of simulated day-shapes
 │   ├── desk.py          # persistent desk memory: journal, beliefs, identity
 │   ├── ledger.py        # append-only JSONL audit trail
@@ -82,6 +85,10 @@ python -m agent.backfill --days 500
 
 # deploy to an always-on box (see deploy/DEPLOY.md)
 sudo bash deploy/install.sh
+
+# fire a strategist judgment slot by hand (dry-run without an API key:
+# writes the exact prompt to data/invocations/ and est. cost to the ledger)
+python -m agent.harness --slot plan
 ```
 
 ## Safety model in one paragraph

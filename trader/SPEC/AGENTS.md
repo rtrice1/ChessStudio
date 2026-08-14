@@ -86,6 +86,36 @@ zoom in or out is logged, so the record shows how attention moved, not
 just what it concluded. Standing goal: minimal overall context — rest
 wide but small, and buy depth only where the focus is.
 
+## Token economy — only judgment calls boil up
+
+The harness (`agent/harness.py` + `agent/escalation.py` + `agent/llm.py`)
+enforces the standing rule: **models are consulted only where a judgment
+call exists**; everything mechanical stays in code. Four gates, in order:
+
+1. **Whether** — `escalation.py`. Three scheduled slots (09:35 plan,
+   12:30 revision, 16:10 post-mortem) plus a short list of event
+   escalations code can't resolve: wire/board disagreeing on a *held*
+   symbol (→ Sonnet triage), a ≥3-day losing streak (→ strategist),
+   repeated poll failures (→ triage, biased toward HALT). Cooldowns and
+   dedup keys stop any condition from re-asking all day. Every alert,
+   fill, and quiet cycle stays below the waterline.
+2. **What** — `focus.py` assembles each prompt under a hard character
+   budget (plan 6K chars, triage 1.5K), excluded items listed.
+3. **What shape** — every invocation carries a JSON schema (structured
+   outputs), so answers come back as a DayPlan or a triage verdict, not
+   prose. Applied values are clamped in code (risk ≤ 0.5%/trade
+   regardless of what the model asks for).
+4. **How much** — `llm.py` enforces per-tier daily output-token caps
+   (strategist 30K, triage 10K); past the cap, invocations are refused
+   and recorded, not queued. The append-only token ledger
+   (`data/token_ledger.jsonl`) prices every call.
+
+**Dry-run is the resting posture.** Without an API key, every slot writes
+the exact would-be prompt to `data/invocations/` and its estimated cost
+to the ledger. Measured baseline: a full strategist day ≈ **$0.15**
+(~2,250 output + ~4,000 input tokens across three Fable calls) — about
+$3/month of judgment before any escalations.
+
 ## Hard limits (enforced in `agent/risk.py`, not in prompts)
 
 | Limit | Value |

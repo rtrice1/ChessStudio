@@ -22,7 +22,10 @@ if [ ! -f "$INSTALL_DIR/desk_state/identity.md" ]; then
   cp "$SRC_DIR/desk_state/identity.md" "$INSTALL_DIR/desk_state/"
 fi
 
-for unit in trader-mock.service trader-poller.service trader-simday.service trader-simday.timer; do
+for unit in trader-mock.service trader-poller.service trader-simday.service \
+            trader-simday.timer trader-strategist@.service \
+            trader-strategist-plan.timer trader-strategist-midday.timer \
+            trader-strategist-postmortem.timer; do
   sed "s|@INSTALL_DIR@|$INSTALL_DIR|g" "$SRC_DIR/deploy/$unit" > "$UNIT_DIR/$unit"
 done
 
@@ -31,6 +34,11 @@ systemctl enable --now trader-mock.service
 sleep 2
 systemctl enable --now trader-poller.service
 systemctl enable --now trader-simday.timer
+# Strategist judgment slots — dry-run until an API key is configured (see
+# trader-strategist@.service comments): prompts and estimated costs only.
+systemctl enable --now trader-strategist-plan.timer \
+                       trader-strategist-midday.timer \
+                       trader-strategist-postmortem.timer
 
 # Seed the gut with simulated day-shape priors if it's empty.
 if [ ! -s "$INSTALL_DIR/desk_state/day_memory.jsonl" ]; then

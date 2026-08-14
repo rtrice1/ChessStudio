@@ -1,0 +1,10 @@
+[Unit]
+Description=Fire the strategist post-mortem slot
+
+[Timer]
+OnCalendar=Mon..Fri 16:10
+Persistent=true
+Unit=trader-strategist@postmortem.service
+
+[Install]
+WantedBy=timers.target

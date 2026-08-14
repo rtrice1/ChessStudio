@@ -8,6 +8,16 @@ You asked what I'd want. Taking that at face value, in order of usefulness:
    valuable thing right now is your review of `SPEC/AGENTS.md` and
    `agent/risk.py` — those two files are the whole safety model.
 
+## For live LLM invocations (whenever you're ready — dry-run until then)
+- **An Anthropic API key** (console.anthropic.com), stored on the box in
+  `/etc/trader/llm.env` (root-owned, mode 600) with `TRADER_LLM_LIVE=1`,
+  plus `pip install anthropic`. You create and hold the key; set a spend
+  limit on it in the console as the outer guard. The harness's own caps
+  make the expected bill ~$3–5/month for the strategist tiers; the
+  dry-run ledger will tell us the real number before you spend anything.
+- **Your budget comfort level** — the per-tier daily caps in
+  `agent/llm.py` are mine (tight); adjust to taste.
+
 ## Home box phase (next)
 - **The home Linux box** you offered — `deploy/install.sh` sets it up in
   one command (systemd + Python 3.11 is all it needs). The desk starts

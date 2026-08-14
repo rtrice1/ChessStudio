@@ -1,0 +1,10 @@
+[Unit]
+Description=Fire the strategist midday-review slot
+
+[Timer]
+OnCalendar=Mon..Fri 12:30
+Persistent=false
+Unit=trader-strategist@midday.service
+
+[Install]
+WantedBy=timers.target
