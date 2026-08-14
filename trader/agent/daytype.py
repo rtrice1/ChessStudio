@@ -70,6 +70,19 @@ def day_features(candles_by_symbol: dict) -> dict | None:
     }
 
 
+# Thresholds are CALIBRATED TO THE MARKET THEY LIVE IN — currently set at
+# empirical percentiles of 200 simulated days (efficiency p50=0.19 p90=0.25;
+# open_vol_ratio p90=1.13; breadth p10/p90=0.3/0.7). A day type is a
+# relative statement ("more one-way than most days"), so on real data these
+# get re-derived from real percentiles, not reused. Note the sim has no
+# opening-auction dynamics — its "open_spike_settle" tags the top decile of
+# open-vs-day volatility, a pale shadow of the real 09:30 violence.
+TREND_EFFICIENCY = 0.24       # ~p85
+SPIKE_OPEN_VOL_RATIO = 1.15   # ~p90
+CHOP_EFFICIENCY = 0.15        # ~p15
+BREADTH_HI, BREADTH_LO = 0.7, 0.3
+
+
 def classify_day(features: dict) -> dict:
     """Map a fingerprint to the folk taxonomy. Deliberately coarse — the
     point is a stable label the gut can accumulate history against, not a
@@ -77,14 +90,14 @@ def classify_day(features: dict) -> dict:
     f = features
     eff, breadth, ovr = f["efficiency"], f["breadth"], f["open_vol_ratio"]
 
-    if eff > 0.45 and breadth >= 0.7:
+    if eff > TREND_EFFICIENCY and breadth >= BREADTH_HI:
         day_type, confidence = "trend_up", min(0.9, 0.5 + eff)
-    elif eff > 0.45 and breadth <= 0.3:
+    elif eff > TREND_EFFICIENCY and breadth <= BREADTH_LO:
         day_type, confidence = "trend_down", min(0.9, 0.5 + eff)
-    elif ovr > 1.8 and eff < 0.45:
+    elif ovr > SPIKE_OPEN_VOL_RATIO and eff <= TREND_EFFICIENCY:
         # the classic: violent open, then the day settles in
-        day_type, confidence = "open_spike_settle", min(0.85, 0.4 + ovr / 10)
-    elif eff < 0.25:
+        day_type, confidence = "open_spike_settle", min(0.85, 0.4 + ovr / 4)
+    elif eff < CHOP_EFFICIENCY:
         day_type, confidence = "chop", 0.6
     else:
         day_type, confidence = "mixed", 0.3
