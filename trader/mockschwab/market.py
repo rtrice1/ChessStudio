@@ -160,6 +160,12 @@ class MarketSim:
             else:
                 adj_vol = base_vol * 0.7
 
+            # The 0.15-0.35 volatility params are ANNUALIZED; convert to
+            # per-day before stepping in day units, or every simulated day
+            # moves ~20% and no intraday strategy can exist. (Found the
+            # hard way: a week of sim days all lost ~2.2% to stop-outs.)
+            adj_vol /= math.sqrt(252.0)
+
             # GBM step
             dW = path_rng.gauss(0, math.sqrt(dt))
             current_price = current_price * math.exp((adj_drift - 0.5 * adj_vol**2) * dt + adj_vol * dW)
