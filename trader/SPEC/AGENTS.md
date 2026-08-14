@@ -53,6 +53,25 @@ journal entry the next morning's instance will wake up to. Plans should
 cite the gut's hunch when they lean on it — and cite its sample size,
 because a gut built on four days is a guess wearing a trench coat.
 
+## Focus — how context reaches Tier 3
+
+No tier ever receives "the whole context chain of everything."
+`agent/focus.py` builds each Tier-3 prompt as a *focus*: a subsystem
+assesses the situation (positions, drawdown, alerts, hunch, time of day)
+and sets a width — wide open and reflective on a quiet flat morning,
+locked onto two symbols when alerts fire on held positions — then
+assembles only what clears a salience bar into a hard budget, and lists
+what it deliberately excluded. Salience = source priority (risk state
+always; news last — it's misleading by construction) × topic match
+(amplified when narrow, crushed when narrow and off-topic) × recency.
+Assembly is self-interacting: if what got selected implies different
+topics than assumed, focus re-forms around them and reassembles — focus
+defined by the interaction it's having, not prescribed in advance. The
+heuristic scorer is deliberately swappable for a Haiku call (the "focus
+agent") on the box: same interface, smarter salience, still cheap. The
+excluded-list goes in the ledger with the decision, so a post-mortem can
+ask not just "what did I know" but "what had I chosen not to look at."
+
 ## Hard limits (enforced in `agent/risk.py`, not in prompts)
 
 | Limit | Value |

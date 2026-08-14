@@ -1,0 +1,14 @@
+[Unit]
+Description=Trader nightly simulated trading day (builds gut memory and journal)
+
+[Service]
+Type=oneshot
+WorkingDirectory=@INSTALL_DIR@
+# Different port than the long-running mock so runs never collide with the poller.
+ExecStart=/bin/sh -c 'python3 -m agent.run_day --port 8899 --seed $(date +%%s) --cycle-seconds 0.5 --data-dir @INSTALL_DIR@/data --desk-dir @INSTALL_DIR@/desk_state'
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=@INSTALL_DIR@
+
+[Install]
+WantedBy=multi-user.target

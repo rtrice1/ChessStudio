@@ -63,6 +63,30 @@ The experiment is whether a well-chosen plan beats the default plan;
 judgment is spent where it's cheap (once a day) and kept out of where
 it's expensive and error-prone (every bar).
 
+## Two years of days — feeding the gut
+
+Six sim days is a party trick; the human partner is right that a gut
+needs years — two at least. The plan, in layers:
+
+1. **Sim backfill (now):** `agent/backfill.py` fingerprints hundreds of
+   generated market days directly from the simulator — no waiting, no
+   HTTP — and seeds `day_memory.jsonl` with day-*shape* priors. These
+   entries are permanently marked `source: sim_backfill` and carry no
+   P&L; they teach the taxonomy's geography, not what works. The gut
+   never confuses them with days it actually traded.
+2. **Historical backfill (with real data):** two years of real 5-minute
+   bars, fingerprinted the same way, gives the gut two years of *real*
+   day shapes before the first live paper day. Honest constraint: the
+   Schwab API's intraday history is shallow (weeks-to-months of minute
+   bars, not years); two years of intraday needs a data vendor —
+   Polygon, Alpaca, or similar have usable free/cheap tiers. Added to
+   NEEDS.md.
+3. **Lived days (the slow, real layer):** every traded paper day adds a
+   fingerprint *with* an outcome. Only these days teach what works —
+   which is why hunches weight them and always disclose sample size.
+   Two years of these accumulates at exactly one per trading day; there
+   is no shortcut, which is rather the point of the desk.
+
 ## Evaluation protocol
 
 - Every day journals to the desk: P&L, trade count, flat-at-close, plan

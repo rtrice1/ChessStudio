@@ -1,0 +1,16 @@
+[Unit]
+Description=Trader mock Schwab API server (mock phase)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=@INSTALL_DIR@
+ExecStart=/usr/bin/python3 -m mockschwab.server --port 8788
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=@INSTALL_DIR@
+
+[Install]
+WantedBy=multi-user.target

@@ -27,6 +27,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from agent.client import BrokerClient           # noqa: E402
 from agent.daytype import classify_day, features_from_client  # noqa: E402
 from agent.desk import Desk                     # noqa: E402
+from agent.focus import assess, build_context, items_from_snapshot  # noqa: E402
 from agent.gut import Gut                       # noqa: E402
 from agent.ledger import Ledger                 # noqa: E402
 from agent.poller import poll_once              # noqa: E402
@@ -87,6 +88,23 @@ def main() -> int:
                     hunch = gut.hunch(features)
                     ledger.record("gut_check", {"features": features, "hunch": hunch})
                     print(f"{ctx.session_pct:5.0%} | gut check: {hunch['note']}")
+                    # Build the focused context a Tier-3 invocation would get
+                    # here, and record what was deliberately left out of mind.
+                    state = assess(snapshot["account"], snapshot.get("alerts", []),
+                                   hunch, ctx.session_pct, ctx.day_open_equity)
+                    focused = build_context(
+                        items_from_snapshot(snapshot, desk.load_context(), hunch),
+                        state)
+                    ledger.record("focus", {
+                        "width": state.width, "topics": state.topics,
+                        "reason": focused["state"].reason,
+                        "passes": focused["passes"],
+                        "included": len(focused["included"]),
+                        "excluded": focused["excluded"]})
+                    print(f"      | focus: width {state.width:.2f} "
+                          f"({focused['state'].reason}) — "
+                          f"{len(focused['included'])} in, "
+                          f"{len(focused['excluded'])} left out of mind")
                     # A hunch shades the plan; it never overrides the gate.
                     if (hunch["suspected_day_type"] in ("chop", "open_spike_settle")
                             and hunch["confidence"] >= 0.5 and hunch["based_on"] >= 3):

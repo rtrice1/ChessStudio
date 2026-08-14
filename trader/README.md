@@ -36,11 +36,14 @@ trader/
 │   ├── strategist.py    # DayPlan (the LLM's interface) + mechanical intraday engine
 │   ├── daytype.py       # day taxonomy: trend / chop / open-spike-settle fingerprinting
 │   ├── gut.py           # gut feel, made honest: remembered days -> hunches with sample size
+│   ├── focus.py         # smart context: width + topics -> salience-scored prompt assembly
+│   ├── backfill.py      # seed gut memory with hundreds of simulated day-shapes
 │   ├── desk.py          # persistent desk memory: journal, beliefs, identity
 │   ├── ledger.py        # append-only JSONL audit trail
 │   └── run_day.py       # simulate one full trading day, flatten at close, journal it
 ├── desk_state/
 │   └── identity.md      # what each strategist instance wakes up to
+├── deploy/              # home-box install: systemd units + install.sh + DEPLOY.md
 ├── SPEC/
 │   ├── AGENTS.md        # the fleet: tiers, the daily clock, authority, PDT rules, gates
 │   ├── STRATEGY.md      # ORB+VWAP baseline, benchmarks, honest caveats
@@ -72,6 +75,14 @@ python -m agent.poller --interval-seconds 60   # Tier-1 watcher loop
 
 Trades and rejections land in `data/ledger.jsonl`; each day's post-mortem
 lands in `desk_state/journal.jsonl`. To halt all trading: `touch data/HALT`.
+
+```bash
+# seed the gut with 500 simulated day-shapes (marked sim_backfill, no P&L)
+python -m agent.backfill --days 500
+
+# deploy to an always-on box (see deploy/DEPLOY.md)
+sudo bash deploy/install.sh
+```
 
 ## Safety model in one paragraph
 

@@ -1,0 +1,17 @@
+[Unit]
+Description=Trader Tier-1 watcher: poll market data into snapshots
+After=trader-mock.service
+Requires=trader-mock.service
+
+[Service]
+Type=simple
+WorkingDirectory=@INSTALL_DIR@
+ExecStart=/usr/bin/python3 -m agent.poller --base-url http://127.0.0.1:8788 --interval-seconds 60 --data-dir @INSTALL_DIR@/data
+Restart=on-failure
+RestartSec=10
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=@INSTALL_DIR@
+
+[Install]
+WantedBy=multi-user.target

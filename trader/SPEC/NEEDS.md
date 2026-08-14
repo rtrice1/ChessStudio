@@ -8,10 +8,22 @@ You asked what I'd want. Taking that at face value, in order of usefulness:
    valuable thing right now is your review of `SPEC/AGENTS.md` and
    `agent/risk.py` — those two files are the whole safety model.
 
+## Home box phase (next)
+- **The home Linux box** you offered — `deploy/install.sh` sets it up in
+  one command (systemd + Python 3.11 is all it needs). The desk starts
+  accumulating immediately: nightly sim days, journal, gut memory.
+- A weekly `tar` of `/opt/trader/desk_state` copied somewhere off-box.
+  That directory is the project's memory; the code is replaceable.
+
 ## Paper-with-real-data phase
 2. **A Schwab developer account** (developer.schwab.com), registered by
    you, with an OAuth app. You hold the credentials; the box holds a
    refresh token; I never need to see them in conversation.
+2b. **A historical intraday data source** for the two-year gut backfill
+   (see STRATEGY.md): Schwab's API won't serve years of minute bars, so
+   a vendor like Polygon or Alpaca (free tiers exist) fills
+   `day_memory.jsonl` with two years of real day shapes before the
+   first live paper day.
 3. **A small always-on box.** Cheapest VPS tier anywhere ($4–6/mo) or a
    spare machine at home. Needs: outbound HTTPS, Python, cron/systemd,
    ~1GB disk for snapshots. Nothing else.
