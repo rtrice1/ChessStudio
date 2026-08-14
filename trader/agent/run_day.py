@@ -70,6 +70,8 @@ def main() -> int:
     gut = Gut(os.path.join(args.desk_dir, "day_memory.jsonl"))
 
     start = client.account()
+    # The ledger persists across days; count this session's rejects only.
+    rejects_at_open = ledger.summary()["kind_counts"].get("risk_reject", 0)
     ctx = SessionContext(day_open_equity=float(start["equity"]), plan=DayPlan())
     ledger.record("session_start", {"equity": start["equity"], "seed": args.seed,
                                     "plan": ctx.plan.rationale})
@@ -170,7 +172,7 @@ def main() -> int:
         "trades": ctx.trades_today,
         "flat_at_close": not open_pos,
         "plan": ctx.plan.rationale,
-        "risk_rejects": summary["kind_counts"].get("risk_reject", 0),
+        "risk_rejects": summary["kind_counts"].get("risk_reject", 0) - rejects_at_open,
         "daily_stop_hit": day_stopped,
         "day_type": day_type,
         "seed": args.seed,
