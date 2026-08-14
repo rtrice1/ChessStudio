@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 from urllib.error import HTTPError
 
 from agent.client import BrokerClient, BrokerError
-from agent.indicators import atr, ema, pct_change, rsi, sma, summarize
+from agent.indicators import atr, day_stats, ema, latest_day, opening_range, pct_change, rsi, sma, summarize, vwap
 from agent.ledger import Ledger
 from agent.poller import compute_alerts
 
@@ -144,6 +144,227 @@ class TestIndicators(unittest.TestCase):
         self.assertIsNotNone(result["ema9"])
         self.assertIsNotNone(result["rsi14"])
         self.assertIsNotNone(result["atr14"])
+
+
+class TestIntradayIndicators(unittest.TestCase):
+    """Test intraday indicators: vwap, latest_day, opening_range, day_stats."""
+
+    def test_vwap_basic(self):
+        """Test VWAP hand-computed on 2 candles."""
+        candles = [
+            {"high": 100.0, "low": 99.0, "close": 99.5, "volume": 1000},
+            {"high": 101.0, "low": 100.0, "close": 100.5, "volume": 2000},
+        ]
+        # typical_price_1 = (100 + 99 + 99.5) / 3 = 298.5 / 3 = 99.5
+        # typical_price_2 = (101 + 100 + 100.5) / 3 = 301.5 / 3 = 100.5
+        # vwap = (99.5 * 1000 + 100.5 * 2000) / (1000 + 2000)
+        #      = (99500 + 201000) / 3000
+        #      = 300500 / 3000 = 100.16666...
+        result = vwap(candles)
+        self.assertIsNotNone(result)
+        self.assertAlmostEqual(result, 100.16666666, places=5)
+
+    def test_vwap_three_candles(self):
+        """Test VWAP with three candles."""
+        candles = [
+            {"high": 100.0, "low": 100.0, "close": 100.0, "volume": 100},
+            {"high": 110.0, "low": 110.0, "close": 110.0, "volume": 200},
+            {"high": 120.0, "low": 120.0, "close": 120.0, "volume": 300},
+        ]
+        # typical prices all equal close: 100, 110, 120
+        # vwap = (100*100 + 110*200 + 120*300) / (100 + 200 + 300)
+        #      = (10000 + 22000 + 36000) / 600
+        #      = 68000 / 600 = 113.333...
+        result = vwap(candles)
+        self.assertIsNotNone(result)
+        self.assertAlmostEqual(result, 113.333333, places=5)
+
+    def test_vwap_empty(self):
+        """Test VWAP on empty list."""
+        result = vwap([])
+        self.assertIsNone(result)
+
+    def test_vwap_zero_volume(self):
+        """Test VWAP with zero total volume."""
+        candles = [
+            {"high": 100.0, "low": 99.0, "close": 99.5, "volume": 0},
+            {"high": 101.0, "low": 100.0, "close": 100.5, "volume": 0},
+        ]
+        result = vwap(candles)
+        self.assertIsNone(result)
+
+    def test_latest_day_single_date(self):
+        """Test latest_day with all candles on same date."""
+        candles = [
+            {"datetime": "2024-01-15T09:30:00Z", "close": 100.0},
+            {"datetime": "2024-01-15T10:00:00Z", "close": 101.0},
+            {"datetime": "2024-01-15T10:30:00Z", "close": 102.0},
+        ]
+        result = latest_day(candles)
+        self.assertEqual(len(result), 3)
+        self.assertEqual(result, candles)
+
+    def test_latest_day_multiple_dates(self):
+        """Test latest_day splits two dates correctly."""
+        candles = [
+            {"datetime": "2024-01-14T15:00:00Z", "close": 100.0},
+            {"datetime": "2024-01-14T15:30:00Z", "close": 100.5},
+            {"datetime": "2024-01-15T09:30:00Z", "close": 101.0},
+            {"datetime": "2024-01-15T10:00:00Z", "close": 101.5},
+            {"datetime": "2024-01-15T10:30:00Z", "close": 102.0},
+        ]
+        result = latest_day(candles)
+        self.assertEqual(len(result), 3)
+        self.assertEqual(result[0]["datetime"], "2024-01-15T09:30:00Z")
+        self.assertEqual(result[-1]["datetime"], "2024-01-15T10:30:00Z")
+
+    def test_latest_day_empty(self):
+        """Test latest_day with empty list."""
+        result = latest_day([])
+        self.assertEqual(result, [])
+
+    def test_latest_day_no_datetime(self):
+        """Test latest_day when candles lack datetime."""
+        candles = [{"close": 100.0}, {"close": 101.0}]
+        result = latest_day(candles)
+        self.assertEqual(result, [])
+
+    def test_opening_range_basic(self):
+        """Test opening_range picks first-N-bars high/low of latest day."""
+        candles = [
+            {"datetime": "2024-01-15T09:30:00Z", "high": 100.0, "low": 99.0},
+            {"datetime": "2024-01-15T10:00:00Z", "high": 101.0, "low": 99.5},
+            {"datetime": "2024-01-15T10:30:00Z", "high": 102.5, "low": 100.0},
+            {"datetime": "2024-01-15T11:00:00Z", "high": 105.0, "low": 98.0},
+            {"datetime": "2024-01-15T11:30:00Z", "high": 110.0, "low": 95.0},
+            {"datetime": "2024-01-15T12:00:00Z", "high": 112.0, "low": 100.0},
+            {"datetime": "2024-01-15T12:30:00Z", "high": 115.0, "low": 111.0},
+        ]
+        result = opening_range(candles, bars=6)
+        self.assertIsNotNone(result)
+        # First 6 bars: highs = [100, 101, 102.5, 105, 110, 112], lows = [99, 99.5, 100, 98, 95, 100]
+        self.assertEqual(result["high"], 112.0)
+        self.assertEqual(result["low"], 95.0)
+
+    def test_opening_range_default_bars(self):
+        """Test opening_range with default bars=6."""
+        candles = [
+            {"datetime": "2024-01-15T09:30:00Z", "high": 100.0, "low": 99.0},
+            {"datetime": "2024-01-15T10:00:00Z", "high": 101.0, "low": 99.5},
+            {"datetime": "2024-01-15T10:30:00Z", "high": 102.5, "low": 100.0},
+            {"datetime": "2024-01-15T11:00:00Z", "high": 105.0, "low": 98.0},
+            {"datetime": "2024-01-15T11:30:00Z", "high": 110.0, "low": 95.0},
+            {"datetime": "2024-01-15T12:00:00Z", "high": 112.0, "low": 100.0},
+        ]
+        result = opening_range(candles)
+        self.assertIsNotNone(result)
+        self.assertEqual(result["high"], 112.0)
+        self.assertEqual(result["low"], 95.0)
+
+    def test_opening_range_empty_latest_day(self):
+        """Test opening_range when latest day has no candles."""
+        result = opening_range([])
+        self.assertIsNone(result)
+
+    def test_opening_range_fewer_bars_than_requested(self):
+        """Test opening_range when latest day has fewer bars than requested."""
+        candles = [
+            {"datetime": "2024-01-15T09:30:00Z", "high": 100.0, "low": 99.0},
+            {"datetime": "2024-01-15T10:00:00Z", "high": 101.0, "low": 99.5},
+            {"datetime": "2024-01-15T10:30:00Z", "high": 102.5, "low": 100.0},
+        ]
+        result = opening_range(candles, bars=6)
+        self.assertIsNotNone(result)
+        self.assertEqual(result["high"], 102.5)
+        self.assertEqual(result["low"], 99.0)
+
+    def test_day_stats_basic(self):
+        """Test day_stats correctness."""
+        candles = [
+            {"datetime": "2024-01-15T09:30:00Z", "open": 100.0, "high": 102.0, "low": 99.0, "close": 101.0, "volume": 1000},
+            {"datetime": "2024-01-15T10:00:00Z", "open": 101.0, "high": 105.0, "low": 100.0, "close": 103.0, "volume": 2000},
+            {"datetime": "2024-01-15T10:30:00Z", "open": 103.0, "high": 104.0, "low": 102.0, "close": 103.5, "volume": 1500},
+        ]
+        result = day_stats(candles)
+        self.assertIsNotNone(result)
+        self.assertEqual(result["open"], 100.0)
+        self.assertEqual(result["high"], 105.0)
+        self.assertEqual(result["low"], 99.0)
+        self.assertIsNotNone(result["vwap"])
+
+    def test_day_stats_empty(self):
+        """Test day_stats with empty list."""
+        result = day_stats([])
+        self.assertIsNone(result)
+
+    def test_day_stats_with_latest_day(self):
+        """Test day_stats uses only latest day."""
+        candles = [
+            {"datetime": "2024-01-14T15:00:00Z", "open": 90.0, "high": 95.0, "low": 88.0, "close": 91.0, "volume": 5000},
+            {"datetime": "2024-01-15T09:30:00Z", "open": 100.0, "high": 102.0, "low": 99.0, "close": 101.0, "volume": 1000},
+            {"datetime": "2024-01-15T10:00:00Z", "open": 101.0, "high": 105.0, "low": 100.0, "close": 103.0, "volume": 2000},
+        ]
+        result = day_stats(candles)
+        self.assertIsNotNone(result)
+        # Should use only 2024-01-15 candles
+        self.assertEqual(result["open"], 100.0)
+        self.assertEqual(result["high"], 105.0)
+        self.assertEqual(result["low"], 99.0)
+
+    def test_summarize_new_keys_present(self):
+        """Test summarize contains new keys."""
+        candles = [
+            {"datetime": "2024-01-15T09:30:00Z", "open": 100.0, "high": 102.0, "low": 99.0, "close": 101.0, "volume": 1000},
+            {"datetime": "2024-01-15T10:00:00Z", "open": 101.0, "high": 105.0, "low": 100.0, "close": 103.0, "volume": 2000},
+        ]
+        result = summarize(candles)
+        self.assertIn("vwap", result)
+        self.assertIn("day_open", result)
+        self.assertIn("day_high", result)
+        self.assertIn("day_low", result)
+        self.assertIn("range_high", result)
+        self.assertIn("range_low", result)
+
+    def test_summarize_new_keys_empty(self):
+        """Test summarize with empty list returns None for new keys."""
+        result = summarize([])
+        self.assertIsNone(result["vwap"])
+        self.assertIsNone(result["day_open"])
+        self.assertIsNone(result["day_high"])
+        self.assertIsNone(result["day_low"])
+        self.assertIsNone(result["range_high"])
+        self.assertIsNone(result["range_low"])
+
+    def test_summarize_new_keys_short_list(self):
+        """Test summarize tolerates short candle list."""
+        candles = [
+            {"datetime": "2024-01-15T09:30:00Z", "open": 100.0, "high": 102.0, "low": 99.0, "close": 101.0, "volume": 1000}
+        ]
+        result = summarize(candles)
+        # Should have the keys even if some values are None
+        self.assertIn("vwap", result)
+        self.assertIn("day_open", result)
+        self.assertIn("day_high", result)
+        self.assertIn("day_low", result)
+        self.assertIn("range_high", result)
+        self.assertIn("range_low", result)
+        # day_open should have the value since there's at least one candle
+        self.assertEqual(result["day_open"], 100.0)
+
+    def test_summarize_existing_keys_unchanged(self):
+        """Test summarize keeps all existing keys."""
+        candles = [
+            {"datetime": "2024-01-15T09:30:00Z", "open": float(100 + i), "high": float(101 + i), "low": float(99 + i), "close": float(100 + i), "volume": 1000}
+            for i in range(50)
+        ]
+        result = summarize(candles)
+        self.assertIn("last_close", result)
+        self.assertIn("sma20", result)
+        self.assertIn("ema9", result)
+        self.assertIn("rsi14", result)
+        self.assertIn("atr14", result)
+        self.assertIn("pct_change_1d", result)
+        self.assertIn("pct_change_5d", result)
 
 
 class TestLedger(unittest.TestCase):

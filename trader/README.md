@@ -1,11 +1,23 @@
 # Trader
 
-An agentic paper-trading system, built by Claude on the terms: *"be the
+An agentic **day-trading** system, built by Claude on the terms: *"be the
 trader, build the software you'd need, spec the agents you'd want, tell me
 what you need."* Accepted, with amendments — see [SPEC/NEEDS.md](SPEC/NEEDS.md)
-for the renegotiated deal (short version: I can't own money, real trading
-happens only behind human-controlled gates, and the risk limits live in
-code, not prompts).
+for the renegotiated deal (I can't own money; real trading sits behind
+human-controlled gates; risk limits live in code, not prompts) and
+[SPEC/PERSISTENCE.md](SPEC/PERSISTENCE.md) for the honest version of
+"Claude persisting on your server" — the desk.
+
+## The shape of it
+
+**Cheap models watch, expensive models plan, code trades the plan.**
+Haiku polls every minute; Claude sets a `DayPlan` at 09:35 (which names,
+what bias, how much risk per trade) and writes a post-mortem at 16:10; in
+between, a mechanical rules engine trades the plan — opening-range
+breakouts confirmed by VWAP, ATR stops and targets, risk-based sizing.
+Everything is flat by 15:45, unconditionally, in code. Between sessions,
+the **desk** (`agent/desk.py`) persists: an append-only journal, beliefs
+with revision history, and an identity file each fresh instance wakes to.
 
 ## Layout
 
@@ -16,16 +28,20 @@ trader/
 │   ├── accounts.py      #   cash account, market/limit orders, fills, P&L
 │   └── server.py        #   /v1/marketdata/*, /v1/accounts/* endpoints
 ├── agent/
-│   ├── client.py        # broker HTTP client (mock now, real Schwab later — same interface)
-│   ├── poller.py        # Tier 1 (Haiku): scheduled data pull -> snapshots + alerts
-│   ├── indicators.py    # SMA/EMA/RSI/ATR over candles
+│   ├── client.py        # broker HTTP client (mock now, real Schwab later)
+│   ├── poller.py        # Tier 1 (Haiku): scheduled pull -> snapshots + alerts
+│   ├── indicators.py    # SMA/EMA/RSI/ATR + VWAP, opening range, day stats
 │   ├── risk.py          # HARD limits — every order passes through here, in code
-│   ├── strategist.py    # Tier 3: decision engine (rules baseline + LLM decision schema)
-│   ├── ledger.py        # append-only JSONL audit trail: fills, rejections, memos
-│   └── run_paper.py     # end-to-end accelerated paper session
+│   ├── strategist.py    # DayPlan (the LLM's interface) + mechanical intraday engine
+│   ├── desk.py          # persistent desk memory: journal, beliefs, identity
+│   ├── ledger.py        # append-only JSONL audit trail
+│   └── run_day.py       # simulate one full trading day, flatten at close, journal it
+├── desk_state/
+│   └── identity.md      # what each strategist instance wakes up to
 ├── SPEC/
-│   ├── AGENTS.md        # the agent fleet: model tiers, schedules, authority, deploy shape
-│   ├── STRATEGY.md      # baseline strategy, benchmarks, honest caveats
+│   ├── AGENTS.md        # the fleet: tiers, the daily clock, authority, PDT rules, gates
+│   ├── STRATEGY.md      # ORB+VWAP baseline, benchmarks, honest caveats
+│   ├── PERSISTENCE.md   # what a server can and can't give Claude; desk conventions
 │   └── NEEDS.md         # what Claude needs from the human, and the deal terms
 └── tests/
 ```
@@ -40,23 +56,29 @@ cd trader
 # tests
 python -m unittest discover -s tests -v
 
-# accelerated paper session: 20 cycles, each ~5 sim-minutes
-python -m agent.run_paper --cycles 20 --time-scale 300
+# one accelerated trading day: 78 cycles = a 6.5h day of 5-min bars
+python -m agent.run_day
+
+# after a run, what the next strategist instance would wake up to:
+python -c "from agent.desk import Desk; print(Desk('desk_state').wake_summary())"
 
 # or run the pieces separately:
-python -m mockschwab.server --port 8788 &         # mock brokerage
-python -m agent.poller --interval-seconds 300     # Tier-1 watcher loop
+python -m mockschwab.server --port 8788 &      # mock brokerage
+python -m agent.poller --interval-seconds 60   # Tier-1 watcher loop
 ```
 
-Everything the system does lands in `data/ledger.jsonl` (append-only) and
-`data/snapshots/`. To halt all trading: `touch data/HALT`.
+Trades and rejections land in `data/ledger.jsonl`; each day's post-mortem
+lands in `desk_state/journal.jsonl`. To halt all trading: `touch data/HALT`.
 
 ## Safety model in one paragraph
 
 Models propose; code disposes. The strategist — LLM or rules — emits
-`Decision` objects, and every one passes through `agent/risk.py`: 10% max
-per position, no margin/shorting, 15% max order, −2% daily-loss circuit
-breaker, file-based kill switch. Those limits change only by a human
-editing the file. Going from mock → real-data paper → real money crosses
-explicit gates listed in [SPEC/AGENTS.md](SPEC/AGENTS.md), each flipped by
-the human, none by an agent.
+`Decision`/`DayPlan` objects, and every order passes through
+`agent/risk.py`: 10% max per position, no margin/shorting/options, 15%
+max order, 0.5% risk per trade, −2% daily-loss circuit breaker, 40-trade
+daily cap, late-day entry cutoff, mandatory end-of-day flatten, and a
+file-based kill switch (`data/HALT`). Limits change only by a human
+editing the file. Mock → real-data paper → real money crosses explicit
+gates in [SPEC/AGENTS.md](SPEC/AGENTS.md) — each flipped by the human,
+none by an agent, with the FINRA pattern-day-trader rule addressed there
+before any real dollar moves.

@@ -90,6 +90,83 @@ def pct_change(closes: list[float], n: int) -> float | None:
     return (closes[-1] - closes[-(n + 1)]) / closes[-(n + 1)]
 
 
+def vwap(candles: list[dict]) -> float | None:
+    """Volume-weighted average price: sum(typical_price * volume) / sum(volume)."""
+    if not candles:
+        return None
+
+    total_volume = sum(c.get("volume", 0) for c in candles)
+    if total_volume == 0:
+        return None
+
+    weighted_sum = sum(
+        ((c.get("high", 0) + c.get("low", 0) + c.get("close", 0)) / 3) * c.get("volume", 0)
+        for c in candles
+    )
+
+    return weighted_sum / total_volume
+
+
+def latest_day(candles: list[dict]) -> list[dict]:
+    """Return only the candles whose datetime falls on the most recent calendar date."""
+    if not candles:
+        return []
+
+    # Get the date part (first 10 chars: YYYY-MM-DD) from the last candle
+    last_datetime = candles[-1].get("datetime", "")
+    if not last_datetime or len(last_datetime) < 10:
+        return []
+
+    latest_date = last_datetime[:10]
+
+    # Find all candles with the same date
+    result = []
+    for candle in candles:
+        candle_datetime = candle.get("datetime", "")
+        if candle_datetime and len(candle_datetime) >= 10:
+            if candle_datetime[:10] == latest_date:
+                result.append(candle)
+
+    return result
+
+
+def opening_range(candles: list[dict], bars: int = 6) -> dict | None:
+    """Get high and low of the first N bars of the latest day."""
+    day_candles = latest_day(candles)
+    if not day_candles:
+        return None
+
+    first_bars = day_candles[:bars]
+    if not first_bars:
+        return None
+
+    highs = [c.get("high", 0) for c in first_bars]
+    lows = [c.get("low", 0) for c in first_bars]
+
+    return {
+        "high": max(highs),
+        "low": min(lows),
+    }
+
+
+def day_stats(candles: list[dict]) -> dict | None:
+    """Get daily open, high, low, and vwap for the latest day."""
+    day_candles = latest_day(candles)
+    if not day_candles:
+        return None
+
+    opens = [c.get("open", 0) for c in day_candles]
+    highs = [c.get("high", 0) for c in day_candles]
+    lows = [c.get("low", 0) for c in day_candles]
+
+    return {
+        "open": opens[0] if opens else None,
+        "high": max(highs) if highs else None,
+        "low": min(lows) if lows else None,
+        "vwap": vwap(day_candles),
+    }
+
+
 def summarize(candles: list[dict]) -> dict:
     """Compute technical summary from candles."""
     if not candles:
@@ -101,6 +178,12 @@ def summarize(candles: list[dict]) -> dict:
             "atr14": None,
             "pct_change_1d": None,
             "pct_change_5d": None,
+            "vwap": None,
+            "day_open": None,
+            "day_high": None,
+            "day_low": None,
+            "range_high": None,
+            "range_low": None,
         }
 
     closes = [c.get("close", 0) for c in candles]
@@ -118,6 +201,17 @@ def summarize(candles: list[dict]) -> dict:
     # pct_change_5d: last vs 5 days back (5*288 = 1440 bars, but clamp)
     pct_change_5d = pct_change(closes, min(len(closes) - 1, len(closes) - 1))
 
+    # New intraday indicators
+    day_stats_val = day_stats(candles)
+    vwap_val = day_stats_val["vwap"] if day_stats_val else None
+    day_open_val = day_stats_val["open"] if day_stats_val else None
+    day_high_val = day_stats_val["high"] if day_stats_val else None
+    day_low_val = day_stats_val["low"] if day_stats_val else None
+
+    opening_range_val = opening_range(candles, bars=6)
+    range_high_val = opening_range_val["high"] if opening_range_val else None
+    range_low_val = opening_range_val["low"] if opening_range_val else None
+
     return {
         "last_close": last_close,
         "sma20": sma20_val,
@@ -126,4 +220,10 @@ def summarize(candles: list[dict]) -> dict:
         "atr14": atr14_val,
         "pct_change_1d": pct_change_1d,
         "pct_change_5d": pct_change_5d,
+        "vwap": vwap_val,
+        "day_open": day_open_val,
+        "day_high": day_high_val,
+        "day_low": day_low_val,
+        "range_high": range_high_val,
+        "range_low": range_low_val,
     }

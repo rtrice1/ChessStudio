@@ -1,85 +1,98 @@
-# Agent Fleet Specification
+# Agent Fleet Specification — Day Trading
 
-How I want the local agents to run once this moves off the mock and onto an
-always-on box. The organizing principle: **cheap models watch, expensive
-models decide, and code — not any model — enforces the limits.**
+How I want the local agents to run on the always-on box. Organizing
+principles: **cheap models watch, expensive models plan, code trades the
+plan, and code — not any model — enforces the limits.** Day trading makes
+the second principle sharper: no LLM belongs in a 1-minute decision loop
+(too slow, too expensive, too tempted to narrate), so the LLM's job is
+compressed into a few planning moments and the intraday loop is mechanical.
 
-## Tiers
+## The day, on the clock (ET)
+
+| Time | Who | What |
+|---|---|---|
+| 08:45 | Tier 1 (Haiku) | Pre-market pull: gaps, prior-day context, halts |
+| 09:35 | **Tier 3 (Fable)** | **Sets the DayPlan** from desk context + opening snapshots |
+| 09:30–16:00 every 1 min | Tier 1 (Haiku) | Poll quotes/candles, indicators (VWAP, opening range, ATR), alerts |
+| continuous | Rules engine (code) | Executes the DayPlan: ORB entries, ATR stops/targets, VWAP exits |
+| 12:30 | Tier 3 (Fable) | Optional single plan revision (or Tier 2 wake) |
+| on alerts | Tier 2 (Sonnet) | Triage: cancel stale orders, wake Tier 3, or ignore |
+| ~15:05 | risk.py | Entry cutoff — exits only from here |
+| 15:45 | Runner (code) | **Unconditional flatten. The day ends in cash, always.** |
+| 16:10 | Tier 3 (Fable) | Post-mortem: journal the day to the desk — every trade, what worked, what to change |
+
+## Tiers and authority
 
 ### Tier 1 — Watcher (Haiku)
-- **What:** `agent/poller.py`. Pulls quotes and 5-minute candles for the
-  watchlist, computes indicators, writes `data/snapshots/*.json` and
-  `data/latest.json`, emits alerts (RSI extremes, >3% moves, SMA20 crosses).
-- **Schedule:** every 5 minutes during market hours (09:30–16:00 ET,
-  weekdays), one pull at 08:45 ET for pre-market context.
-- **Authority:** none. Read-only against the brokerage API. Cannot place,
-  modify, or cancel orders. This tier is ~95% of all API calls and should
-  cost close to nothing.
-- **Haiku's role:** beyond the mechanical pull, a Haiku pass over each
-  snapshot writes a 2–3 sentence "anything notable?" annotation. It flags;
-  it never concludes.
+`agent/poller.py`. 1-minute cadence during the session. Read-only; no
+order authority. Computes the intraday state the rules engine consumes:
+VWAP, opening range, ATR, RSI, alerts. ~95% of API calls, near-zero cost.
 
 ### Tier 2 — Triage (Sonnet)
-- **What:** wakes when Tier 1 emits alerts, or every 30 minutes as a
-  heartbeat. Reads the last few snapshots plus open orders. Decides one
-  thing: is this worth waking Tier 3?
-- **Authority:** may cancel stale WORKING limit orders (>2h old). May NOT
-  open positions or increase exposure.
-- **Output:** a one-paragraph triage memo appended to the ledger, and
-  optionally a wake signal for Tier 3.
+Wakes on alerts (big moves, RSI extremes, broken data). May cancel stale
+WORKING orders. May wake Tier 3 with a one-paragraph memo. May NOT open
+positions or touch the plan itself.
 
-### Tier 3 — Strategist (Fable/Opus — this is "me")
-- **What:** reads `data/latest.json` (the format is designed to fit in one
-  prompt), recent ledger entries, and current positions; produces decisions
-  in the `Decision` schema of `agent/strategist.py`: symbol, action,
-  quantity, and a written rationale. Every decision — including HOLD — gets
-  a memo in the ledger, because the review conversation with the human is
-  the actual product of the first month.
-- **Schedule:** 10:00 ET, 13:00 ET, 15:30 ET, plus Tier-2 wakes. Rare and
-  deliberate on purpose: I don't believe an LLM should be making
-  5-minute-bar decisions, and the token cost would eat the returns anyway.
-- **Authority:** may propose any order, but every order passes through
-  `agent/risk.py` in code. A rejected order is logged and dropped, not
-  retried harder.
+### Tier 3 — Strategist (Fable — "me")
+Runs at 09:35, optionally 12:30, and 16:10. Reads `desk_state/` (see
+PERSISTENCE.md) and `data/latest.json`; emits a `DayPlan`
+(`agent/strategist.py`): which symbols are in play, per-symbol bias,
+per-trade risk fraction, stop/target ATR multiples. The intraday rules
+engine executes that plan mechanically. Tier 3 never places orders
+directly mid-session; it changes the plan, and only at its scheduled
+moments. The 16:10 post-mortem writes the desk journal entry the next
+morning's instance will wake up to.
 
 ## Hard limits (enforced in `agent/risk.py`, not in prompts)
 
 | Limit | Value |
 |---|---|
 | Max position per symbol | 10% of equity |
-| Max gross exposure | 100% (cash account, no margin, no shorting, no options) |
+| Max gross exposure | 100% — cash account, no margin, no shorting, no options |
 | Max single-order notional | 15% of equity |
-| Daily loss circuit breaker | −2% from day-open equity halts all buying |
-| Kill switch | `data/HALT` file existing halts everything; only a human deletes it |
+| Per-trade risk (plan default) | 0.5% of equity, entry-to-stop |
+| Daily loss circuit breaker | −2% from day open → flatten everything, done for the day |
+| Max trades per day | 40 |
+| Entry cutoff | no new entries after ~90% of the session |
+| End of day | flat by 15:45, unconditionally, in code |
+| Kill switch | `data/HALT` file halts everything; only a human deletes it |
 
-Changing any of these is a human edit to `risk.py`, reviewed in a PR. No
-agent tier may modify `risk.py`, the ledger history, or the kill switch.
+No agent tier may modify `risk.py`, ledger history, the desk journal
+(append-only), or the kill switch.
+
+## Regulatory reality check (human decisions, before real money)
+
+- **PDT rule (FINRA):** a margin account making 4+ day trades in 5
+  business days must hold ≥ $25,000 equity. Under that, the account gets
+  frozen for 90 days. So real day trading means either ≥$25k in a margin
+  account or a cash account instead.
+- **Cash account day trading** avoids PDT but proceeds settle T+1 —
+  trading with unsettled funds triggers good-faith violations. The
+  strategist must then treat settled cash, not cash, as the budget.
+- Wash-sale rules make the tax accounting of frequent same-symbol trades
+  genuinely annoying; the ledger records everything needed, but a human
+  (or their accountant) owns filing.
 
 ## Deployment shape
 
-- One small always-on Linux box (cheapest VPS tier is fine; this is
-  I/O-bound, not compute-bound). Python 3.11+, stdlib only — no dependency
-  chain to maintain.
-- Processes under systemd (or cron for Tier 1): `poller.service` (Tier 1),
-  `triage.timer` (Tier 2), `strategist.timer` (Tier 3). Each tier is a
-  separate process with separate credentials scope where the brokerage
-  supports it (read-only token for Tier 1).
-- All state on disk as JSON/JSONL under `data/` — human-greppable, no
-  database until there's a reason.
-- The ledger (`data/ledger.jsonl`) is append-only and is the audit trail:
-  every fill, every risk rejection with its reason, every decision memo.
+One small always-on Linux box. Python 3.11+, stdlib only. Processes under
+systemd: `poller.service` (Tier 1 loop), `rules-engine.service`
+(intraday executor), `strategist.timer` (09:35 / 12:30 / 16:10 Tier-3
+invocations), `triage.path` (alert-driven Tier 2). All state on disk as
+JSON/JSONL under `data/` and `desk_state/`. The ledger and desk journal
+are append-only audit trails. Tier 1 runs with read-only API credentials
+where the brokerage supports scoping.
 
 ## Path to real money — gates, in order
 
-1. **Mock** (this repo, now): everything runs against `mockschwab`,
-   accelerated clock, until the plumbing is boring.
-2. **Paper, real data:** swap `BrokerClient.base_url` to the real Schwab
-   API in read-only + paper mode. Run ≥30 trading days. Human reviews the
-   ledger weekly with me.
-3. **Real, small:** only if (a) paper beats holding SPY over the window or
-   we understand exactly why not, (b) the human has read the risk file and
-   the worst week's ledger, and (c) the account is one the human can afford
-   to lose outright. Human executes the credential setup; I never see or
-   store long-lived keys — the box holds them, scoped and revocable.
-4. At every gate the default is "don't advance." Boredom is not a reason
-   to advance a gate; only the data is.
+1. **Mock** (now): accelerated sim days until the plumbing is boring.
+2. **Paper, real data:** real Schwab API, paper account, ≥30 trading
+   days. Human reviews the ledger + desk journal weekly with me.
+3. **Real, small:** only if (a) paper beats both the no-LLM rules
+   baseline and sitting in SPY over the window, (b) the human has read
+   the worst day's ledger, (c) the PDT/cash-account choice above is made
+   deliberately, and (d) the account is money the human can lose
+   outright. Human sets up credentials; I never see or store long-lived
+   keys.
+4. Default at every gate is "don't advance." Only the data advances a
+   gate; boredom doesn't.

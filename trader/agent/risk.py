@@ -21,6 +21,11 @@ class RiskLimits:
     daily_loss_halt_pct: float = 0.02
     # Absolute floor: never let cash go below this on a buy.
     min_cash_reserve: float = 0.0
+    # Day-trading: hard cap on round-trip-generating orders per day.
+    max_daily_trades: int = 40
+    # Day-trading: no new entries after this fraction of the session has
+    # elapsed (0.9 of a 6.5h session = ~15:05 ET). Exits are always allowed.
+    entry_cutoff_session_pct: float = 0.9
 
 
 @dataclass
@@ -49,12 +54,18 @@ def check_order(
     est_price: float,
     day_open_equity: float | None = None,
     limits: RiskLimits | None = None,
+    trades_today: int | None = None,
+    session_pct: float | None = None,
 ) -> RiskVerdict:
     """Validate a proposed order against hard limits.
 
     account: broker account snapshot dict (cash, equity, positions).
     est_price: current ask (buys) or bid (sells) used to estimate notional.
     day_open_equity: equity at session start, for the daily-loss circuit breaker.
+    trades_today: filled order count so far today, for the trade-count cap.
+    session_pct: fraction of the trading session elapsed (0.0 open, 1.0 close);
+                 new entries are refused late in the day so the mandatory
+                 end-of-day flatten never has fresh positions to unwind.
     """
     limits = limits or RiskLimits()
 
@@ -83,6 +94,19 @@ def check_order(
         return RiskVerdict(False, f"unknown instruction {instruction!r}")
 
     # --- BUY checks ---
+    if trades_today is not None and trades_today >= limits.max_daily_trades:
+        return RiskVerdict(
+            False,
+            f"daily trade cap: {trades_today} >= {limits.max_daily_trades}",
+        )
+
+    if session_pct is not None and session_pct >= limits.entry_cutoff_session_pct:
+        return RiskVerdict(
+            False,
+            f"entry cutoff: {session_pct:.0%} of session elapsed "
+            f">= {limits.entry_cutoff_session_pct:.0%}; exits only",
+        )
+
     if day_open_equity is not None and day_open_equity > 0:
         drawdown = (day_open_equity - equity) / day_open_equity
         if drawdown >= limits.daily_loss_halt_pct:
