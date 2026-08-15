@@ -1,0 +1,15 @@
+[Unit]
+Description=Trader overnight rumor scan (public subreddit listings, aggregate only)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=@INSTALL_DIR@
+ExecStart=/usr/bin/python3 -m agent.rumors scan --desk-dir @INSTALL_DIR@/desk_state
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=@INSTALL_DIR@
+
+[Install]
+WantedBy=multi-user.target

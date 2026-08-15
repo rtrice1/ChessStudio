@@ -16,10 +16,16 @@ import json
 import os
 import threading
 import time
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from zoneinfo import ZoneInfo
 
+from agent.events import active_blackouts, load_events
 from agent.metrics import scoreboard as compute_scoreboard
+from agent.rumors import context as rumors_context
 from agent.strategist import score_entry
+
+ET = ZoneInfo("America/New_York")
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 EVENT_KINDS = ("fill", "risk_reject", "gut_check", "focus", "daily_stop",
@@ -148,6 +154,15 @@ class StateAssembler:
             "beliefs": {k: v.get("value") if isinstance(v, dict) else v
                         for k, v in beliefs.items()},
             "scoreboard": self._score_cache,
+            "rumors": rumors_context(self.desk_dir),
+            "blackouts": [{"kind": b.kind, "reason": b.reason,
+                           "flatten": b.flatten}
+                          for b in active_blackouts(
+                              load_events(self.data_dir), datetime.now(ET))],
+            "short_interest": _read_json(
+                os.path.join(self.data_dir, "short_interest.json")) or {},
+            "filings": list(reversed(_read_jsonl_tail(
+                os.path.join(self.data_dir, "edgar_filings.jsonl"), 8))),
         }
 
 
@@ -212,6 +227,7 @@ small{color:var(--muted)}
   <div class="panel"><h2>Positions</h2><table id="positions"></table></div>
   <div class="panel"><h2>Live feed</h2><div class="feed" id="feed"></div></div>
   <div class="panel"><h2>Day plan</h2><div id="plan" style="color:var(--ink2);font-size:13px">—</div></div>
+  <div class="panel"><h2>Overnight rumors &amp; filings</h2><div id="rumors" style="font-size:12.5px;color:var(--ink2)">—</div></div>
   <div class="panel"><h2>Scoreboard</h2><table id="score"></table></div>
   <div class="panel"><h2>Desk beliefs</h2><div id="beliefs" style="font-size:12.5px;color:var(--ink2)"></div></div>
 </div>
@@ -330,6 +346,10 @@ function signals(s){
       ?bullet(last,i.range_low,i.range_high,[]):"—";
     const n=news[sym]||{};
     const senti=(n.wire_sentiment!=null)?`${sign(n.wire_sentiment)}${n.wire_sentiment}/${sign(n.board_sentiment)}${n.board_sentiment}`:"—";
+    const vel=n.board_velocity;
+    const velCell=vel==null?"—":`<span class="${vel>=3?"neg":""}">${Number(vel).toFixed(1)}x</span>`;
+    const si=((s.short_interest||{})[sym]||{}).short_pct_float;
+    const siCell=si==null?"—":`<span class="${si>=15?"neg":""}">${Number(si).toFixed(0)}%</span>`;
     const badges=(alertsBy[sym]||[]).map(k=>`<span class="badge">${k}</span>`).join("");
     const mh=i.macd_hist,adx=i.adx,pb=i.bb_percent_b,rv=i.rel_volume;
     const macdCell=mh==null?"—":`<span class="${cls(mh)}">${sign(mh)}${Number(mh).toFixed(2)}</span>`;
@@ -342,11 +362,12 @@ function signals(s){
       `<td>${bullet(i.rsi14,0,100,[30,70])}</td><td class="num">${macdCell}</td>`+
       `<td class="num">${adxCell}</td><td>${pbCell}</td><td class="num">${rvCell}</td>`+
       `<td>${vsV}</td><td>${rangePos}</td>`+
-      `<td class="num">${senti}</td><td>${badges}</td></tr>`;
+      `<td class="num">${senti}</td><td class="num">${velCell}</td>`+
+      `<td class="num">${siCell}</td><td>${badges}</td></tr>`;
   }).join("");
   $("signals").innerHTML=`<tr><th>sym</th><th>score</th><th>last</th><th>day</th><th>rsi (30/70)</th>`+
     `<th>macd-h</th><th>adx</th><th>%b</th><th>rvol</th>`+
-    `<th>vwap</th><th>range pos</th><th>wire/board</th><th>alerts</th></tr>${rows}`;
+    `<th>vwap</th><th>range pos</th><th>wire/board</th><th>vel</th><th>si</th><th>alerts</th></tr>${rows}`;
 }
 function meters(s){
   const eq=(s.account||{}).equity||0,series=s.equity_series||[];
@@ -383,6 +404,7 @@ function dailyPnl(s){
 function chips(s){
   const h=s.hunch,p=s.plan;
   $("chips").innerHTML=
+    (s.blackouts||[]).map(b=>`<span class="chip" style="border-color:var(--bad);color:var(--bad)">⏸ ${b.reason}${b.flatten?" [flatten]":""}</span>`).join("")+
     (h&&h.suspected_day_type?`<span class="chip">gut: ${h.suspected_day_type} (${h.based_on} days)</span>`:"")+
     `<span class="chip">instrument: ${(p&&p.instrument)||"shares"}</span>`+
     `<span class="chip">book: ${(s.positions||[]).length}/${(p&&p.max_positions)||4} slots</span>`+
@@ -415,13 +437,37 @@ function plan(s){
 }
 function score(s){
   const sb=s.scoreboard;if(!sb){$("score").innerHTML="";return}
-  const t=sb.per_trade||{},d=sb.per_day||{},h=sb.hunch_calibration||{};
+  const t=sb.per_trade||{},d=sb.per_day||{},h=sb.hunch_calibration||{},sl=sb.slippage||{};
   const rows=[["trades",t.trades],["win rate",t.win_rate!=null?(t.win_rate*100).toFixed(1)+"%":"—"],
     ["expectancy/trade",t.expectancy_per_trade!=null?`<span class="${cls(t.expectancy_per_trade)}">${sign(t.expectancy_per_trade)}${fmt(t.expectancy_per_trade)}</span>`:"—"],
     ["profit factor",t.profit_factor??"—"],["days",d.days],["max drawdown",d.max_drawdown!=null?(d.max_drawdown*100).toFixed(2)+"%":"—"],
     ["flat-at-close",d.flat_at_close_rate!=null?(d.flat_at_close_rate*100).toFixed(0)+"%":"—"],
+    ["spread paid",sl.measured_fills?`<span class="neg">${fmt(sl.total_vs_mid)}</span> (${fmt(sl.avg_per_fill)}/fill)`:"—"],
     ["hunch accuracy",h.graded?`${(h.accuracy*100).toFixed(0)}% of ${h.graded}`:"—"]];
   $("score").innerHTML=rows.map(([k,v])=>`<tr><td>${k}</td><td class="num">${v??"—"}</td></tr>`).join("");
+}
+function rumors(s){
+  const r=s.rumors,f=s.filings||[];
+  let html="";
+  if(r&&r.scan){
+    const t=r.scan.tickers||{};
+    const rows=Object.entries(t).sort((a,b)=>b[1].mentions-a[1].mentions).slice(0,6)
+      .map(([sym,v])=>`<tr><td style="color:var(--ink)">${sym}</td>`+
+        `<td class="num">x${v.mentions}</td>`+
+        `<td class="num ${cls(v.sentiment)}">${sign(v.sentiment)}${v.sentiment}</td></tr>`).join("");
+    html+=`<div style="margin-bottom:4px"><small>scan for ${r.scan.for_date} — ${r.scan.posts_seen} posts</small></div>`+
+      (rows?`<table>${rows}</table>`:"<div>no tickers above the mention floor</div>");
+    const cal=Object.entries(r.calibration||{});
+    if(cal.length)
+      html+=`<div style="margin-top:6px"><small>track record: `+
+        cal.map(([k,v])=>`${k} ${v.direction_hit_rate==null?"—":(v.direction_hit_rate*100).toFixed(0)+"%"} of ${v.graded}`).join(" · ")+
+        `</small></div>`;
+    else html+=`<div style="margin-top:6px"><small>track record: nothing graded yet — rumors are unweighted noise until they earn a number</small></div>`;
+  } else html+="no overnight scan yet";
+  if(f.length)
+    html+=`<div style="margin-top:8px;border-top:1px solid var(--line);padding-top:5px">`+
+      f.map(x=>`<div><span style="color:var(--muted);margin-right:6px">${(x.updated||"").slice(5,16)}</span>${x.symbol||""} ${x.form||""} <small>${(x.company||"").slice(0,40)}</small></div>`).join("")+`</div>`;
+  $("rumors").innerHTML=html;
 }
 function beliefs(s){
   $("beliefs").innerHTML=Object.entries(s.beliefs||{}).map(([k,v])=>`<div>• <b>${k}</b>: ${String(v).slice(0,120)}</div>`).join("")||"—";
@@ -430,7 +476,7 @@ const es=new EventSource("/events");
 es.onmessage=m=>{lastMsg=Date.now();const s=JSON.parse(m.data);
   $("halt").style.display=s.halted?"block":"none";
   tiles(s);chips(s);spark(s.equity_series);minis(s);signals(s);meters(s);
-  dailyPnl(s);positions(s);feed(s);plan(s);score(s);beliefs(s);};
+  dailyPnl(s);positions(s);feed(s);plan(s);rumors(s);score(s);beliefs(s);};
 setInterval(()=>{$("dot").className="dot"+(Date.now()-lastMsg>8000?" stale":"")},2000);
 </script></body></html>"""
 

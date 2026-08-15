@@ -38,6 +38,32 @@ def sentiment_score(headline: str) -> int:
         return 0
 
 
+def mention_velocity(items: list[dict]) -> dict:
+    """Board mention rate-of-change: posts in the last hour vs the hour
+    before. The sentiment is misleading by construction; the *acceleration*
+    is honest — a name going from 2 posts/hour to 20 predicts volatility
+    (not direction), and that's exactly what a day trader wants to know."""
+    from datetime import datetime as _dt
+
+    stamps = []
+    for item in items:
+        if item.get("source") != "board":
+            continue
+        try:
+            stamps.append(_dt.fromisoformat(str(item.get("ts", ""))))
+        except ValueError:
+            continue
+    if not stamps:
+        return {"recent": 0, "prior": 0, "ratio": None}
+    now = max(stamps)
+    hour = 3600.0
+    recent = sum(1 for s in stamps if (now - s).total_seconds() <= hour)
+    prior = sum(1 for s in stamps
+                if hour < (now - s).total_seconds() <= 2 * hour)
+    ratio = (recent / prior) if prior else None
+    return {"recent": recent, "prior": prior, "ratio": ratio}
+
+
 def summarize_news(news: dict) -> dict:
     """
     Summarize news across symbols.
@@ -52,6 +78,8 @@ def summarize_news(news: dict) -> dict:
                 "board_count": 0,
                 "wire_sentiment": 0,
                 "board_sentiment": 0,
+                "board_velocity": None,
+                "board_recent": 0,
                 "latest_headline": None,
             }
             continue
@@ -62,12 +90,15 @@ def summarize_news(news: dict) -> dict:
         wire_sentiment = sum(sentiment_score(item.get("headline", "")) for item in wire_items)
         board_sentiment = sum(sentiment_score(item.get("headline", "")) for item in board_items)
 
+        velocity = mention_velocity(items)
         summary[symbol] = {
             "count": len(items),
             "wire_count": len(wire_items),
             "board_count": len(board_items),
             "wire_sentiment": wire_sentiment,
             "board_sentiment": board_sentiment,
+            "board_velocity": velocity["ratio"],
+            "board_recent": velocity["recent"],
             "latest_headline": items[0].get("headline") if items else None,
         }
 
@@ -82,6 +113,12 @@ def compute_alerts(
 ) -> list[dict]:
     """Compute alerts from indicators, quotes, previous snapshot, and news."""
     alerts = []
+
+    # Halted names: the last print is frozen fiction; flag it loudly.
+    for symbol, quote in quotes.items():
+        if quote and quote.get("halted"):
+            alerts.append({"symbol": symbol, "kind": "halted",
+                           "detail": "trading halted — quotes are stale"})
 
     for symbol, summary in indicators.items():
         if summary is None:

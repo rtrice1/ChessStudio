@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from .events import entry_blocked
 from .risk import RiskLimits, check_order, is_option
 
 
@@ -75,6 +76,9 @@ class SessionContext:
     # The gut's read on the day, set by the runner after its gut check.
     # Shades entry scoring (chop makes chasing costlier); never gates.
     hunch: dict | None = None
+    # Active scheduled-event blackouts (events.Blackout), set by the runner
+    # each cycle. Blocks ENTRIES only — exits always work.
+    blackouts: list = field(default_factory=list)
 
 
 def score_entry(ind: dict, news: dict | None = None,
@@ -218,6 +222,11 @@ def decide(snapshot: dict, ctx: SessionContext) -> list[Decision]:
 
         pos = positions.get(symbol)
         if pos and int(pos.get("quantity", 0)) > 0:
+            # A halted name has a frozen, untrustworthy last — no exit
+            # decision would fill anyway, and acting on the stale print
+            # would be acting on fiction. Wait for the resume.
+            if quote.get("halted"):
+                continue
             avg = float(pos.get("averagePrice", 0.0)) or last
             stop = avg - plan.stop_atr * atr if atr else avg * 0.99
             target = avg + plan.target_atr * atr if atr else avg * 1.02
@@ -237,6 +246,12 @@ def decide(snapshot: dict, ctx: SessionContext) -> list[Decision]:
         if plan.symbols and symbol not in plan.symbols:
             continue
         if plan.bias.get(symbol) == "off":
+            continue
+        if quote.get("halted"):
+            continue
+        # Known event time in window (FOMC, CPI, earnings): stand flat
+        # into it. The reaction is tradeable; the print is a coin toss.
+        if entry_blocked(ctx.blackouts, symbol):
             continue
         if not (range_high and range_low and vwap and atr):
             continue
@@ -356,12 +371,10 @@ def execute(decisions: list[Decision], snapshot: dict, ctx: SessionContext,
                 continue
             d = translated
         if is_option(d.symbol):
-            contract = (client.quotes([d.symbol]) or {}).get(d.symbol) or {}
-            est_price = (contract.get("ask") if d.action == "BUY"
-                         else contract.get("bid"))
+            quote = (client.quotes([d.symbol]) or {}).get(d.symbol) or {}
         else:
             quote = quotes.get(d.symbol) or {}
-            est_price = quote.get("ask") if d.action == "BUY" else quote.get("bid")
+        est_price = quote.get("ask") if d.action == "BUY" else quote.get("bid")
         if not est_price:
             ledger.record("risk_reject", {"symbol": d.symbol, "action": d.action,
                                           "reason": "no quote available"})
@@ -382,7 +395,22 @@ def execute(decisions: list[Decision], snapshot: dict, ctx: SessionContext,
                  "order": order, "rationale": d.rationale}
         if order.get("status") == "FILLED":
             fill_price = float(order.get("fillPrice") or 0.0)
-            ledger.record("fill", {**entry, "notional": fill_price * d.quantity})
+            # The cost of crossing the spread, measured on every fill:
+            # slippage vs mid is what a marketable limit at mid would have
+            # saved. On 40 trades/day the spread IS the P&L — metrics.py
+            # aggregates this into the scoreboard's "spread paid".
+            bid, ask = quote.get("bid"), quote.get("ask")
+            slippage = None
+            if bid and ask and fill_price:
+                mid = (float(bid) + float(ask)) / 2.0
+                per_share = (fill_price - mid if d.action == "BUY"
+                             else mid - fill_price)
+                mult = 100.0 if is_option(d.symbol) else 1.0
+                slippage = {"vs_mid_per_share": round(per_share, 4),
+                            "vs_mid_total": round(per_share * d.quantity * mult, 2),
+                            "half_spread": round((float(ask) - float(bid)) / 2.0, 4)}
+            ledger.record("fill", {**entry, "notional": fill_price * d.quantity,
+                                   "slippage": slippage})
             # The daily cap limits ENTRIES; exits must never consume it
             # (a desk that can't sell because it bought too much today
             # would be trapped in its own positions).

@@ -1,0 +1,15 @@
+[Unit]
+Description=Trader EDGAR 8-K feed poll (watched symbols only)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=@INSTALL_DIR@
+ExecStart=/usr/bin/python3 -m agent.edgar --data-dir @INSTALL_DIR@/data
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=@INSTALL_DIR@
+
+[Install]
+WantedBy=multi-user.target

@@ -30,7 +30,10 @@ fi
 for unit in trader-mock.service trader-poller.service trader-simday.service \
             trader-simday.timer trader-dashboard.service trader-strategist@.service \
             trader-strategist-plan.timer trader-strategist-midday.timer \
-            trader-strategist-postmortem.timer; do
+            trader-strategist-postmortem.timer \
+            trader-rumors-scan.service trader-rumors-scan.timer \
+            trader-rumors-grade.service trader-rumors-grade.timer \
+            trader-edgar.service trader-edgar.timer; do
   sed "s|@INSTALL_DIR@|$INSTALL_DIR|g" "$SRC_DIR/deploy/$unit" > "$UNIT_DIR/$unit"
 done
 
@@ -45,6 +48,11 @@ systemctl enable --now trader-simday.timer
 systemctl enable --now trader-strategist-plan.timer \
                        trader-strategist-midday.timer \
                        trader-strategist-postmortem.timer
+# The legal-edge feeds: overnight rumor scan + next-day backtrace, EDGAR 8-Ks.
+systemctl enable --now trader-rumors-scan.timer trader-rumors-grade.timer \
+                       trader-edgar.timer
+# Seed the scheduled-event calendar template if absent (edit the dates!).
+(cd "$INSTALL_DIR" && python3 -m agent.events seed) || true
 
 # Seed the gut with simulated day-shape priors if it's empty.
 if [ ! -s "$INSTALL_DIR/desk_state/day_memory.jsonl" ]; then

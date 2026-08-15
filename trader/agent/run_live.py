@@ -27,6 +27,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from agent.daytype import classify_day, features_from_client  # noqa: E402
 from agent.desk import Desk                     # noqa: E402
+from agent.events import active_blackouts, load_events, should_flatten  # noqa: E402
 from agent.gut import Gut                       # noqa: E402
 from agent.ledger import Ledger                 # noqa: E402
 from agent.poller import poll_once              # noqa: E402
@@ -97,6 +98,10 @@ def main() -> int:
     print(f"SHADOW day | equity {start['equity']:.2f} | "
           f"instrument {ctx.plan.instrument} | plan: {ctx.plan.rationale[:80]}")
 
+    events = load_events(args.data_dir)
+    if events:
+        print(f"event calendar: {len(events)} scheduled event(s) loaded")
+    last_blackout = ""
     day_stopped = flattened = gut_checked = False
     while True:
         now = datetime.now(ET)
@@ -107,6 +112,13 @@ def main() -> int:
             if now.time() >= CLOSE_T:
                 break
         ctx.session_pct = session_pct(now)
+        ctx.blackouts = active_blackouts(events, now)
+        blackout_now = "; ".join(b.reason for b in ctx.blackouts)
+        if blackout_now != last_blackout:
+            if blackout_now:
+                ledger.record("event_blackout", {"reason": blackout_now})
+                print(f"{now:%H:%M} | EVENT BLACKOUT: {blackout_now}")
+            last_blackout = blackout_now
         try:
             snapshot = poll_once(broker, SYMBOLS, args.data_dir)
             # One gut check after the opening range forms: the day's
@@ -125,10 +137,11 @@ def main() -> int:
                 day_stopped = True
                 ledger.record("daily_stop", {"drawdown": round(drawdown, 6)})
                 print(f"{now:%H:%M} | DAILY STOP: down {drawdown:.2%}")
-            if day_stopped or now.time() >= FLATTEN_T:
+            event_flatten = should_flatten(ctx.blackouts)
+            if day_stopped or now.time() >= FLATTEN_T or event_flatten:
                 decisions = flatten_all(snapshot["account"],
                                         "daily max loss" if day_stopped
-                                        else "end of day")
+                                        else event_flatten or "end of day")
                 flattened = flattened or bool(decisions)
             else:
                 decisions = decide(snapshot, ctx)

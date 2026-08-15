@@ -1,0 +1,9 @@
+[Unit]
+Description=Grade rumors after each session closes
+
+[Timer]
+OnCalendar=Mon..Fri 16:30
+Persistent=true
+
+[Install]
+WantedBy=timers.target

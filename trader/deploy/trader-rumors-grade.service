@@ -1,0 +1,13 @@
+[Unit]
+Description=Trader rumor backtrace: grade yesterday's rumors against what actually happened
+
+[Service]
+Type=oneshot
+WorkingDirectory=@INSTALL_DIR@
+ExecStart=/usr/bin/python3 -m agent.rumors grade --desk-dir @INSTALL_DIR@/desk_state
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=@INSTALL_DIR@
+
+[Install]
+WantedBy=multi-user.target

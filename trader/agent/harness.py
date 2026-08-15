@@ -128,14 +128,16 @@ TASK_LINES = {
 
 
 def build_prompt(esc: Escalation, snapshot: dict, desk: Desk,
-                 hunch: dict | None, session: FocusSession) -> str:
+                 hunch: dict | None, session: FocusSession,
+                 rumors: dict | None = None) -> str:
     """Assemble the focused prompt for one judgment call."""
     session.start_task(esc.topics, f"task: {esc.kind}")
     if esc.kind in ("sentiment_divergence", "data_staleness"):
         session.deepen("narrow triage question")
         session.deepen("specifics only")
 
-    items = items_from_snapshot(snapshot, desk.load_context(journal_limit=10), hunch)
+    items = items_from_snapshot(snapshot, desk.load_context(journal_limit=10),
+                                hunch, rumors)
     focused = build_context(items, session.state,
                             budget_chars=CHAR_BUDGETS[esc.kind])
     return (f"You are the {esc.tier} of an automated day-trading desk "
@@ -197,7 +199,14 @@ def run(esc: Escalation, base_url: str, data_dir: str, desk_dir: str) -> dict | 
     if days and days[-1].get("features"):
         hunch = gut.hunch(days[-1]["features"])
 
-    prompt = build_prompt(esc, snapshot, desk, hunch, FocusSession())
+    # The overnight rumor board (with its track record) reaches the
+    # planning slots only — intraday triage doesn't need last night's chatter.
+    rumors = None
+    if esc.kind in ("day_plan", "midday_review"):
+        from agent.rumors import context as rumors_context
+        rumors = rumors_context(desk_dir)
+
+    prompt = build_prompt(esc, snapshot, desk, hunch, FocusSession(), rumors)
     result = llm.invoke(esc.tier, esc.kind, prompt,
                         schema=SCHEMAS[esc.kind],
                         max_tokens=MAX_TOKENS[esc.kind])

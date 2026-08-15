@@ -241,7 +241,8 @@ class FocusSession:
 
 
 def items_from_snapshot(snapshot: dict, desk_context: dict | None = None,
-                        hunch: dict | None = None) -> list[Item]:
+                        hunch: dict | None = None,
+                        rumors: dict | None = None) -> list[Item]:
     """Turn the poller snapshot + desk state into candidate items."""
     out: list[Item] = []
     account = snapshot.get("account", {})
@@ -275,6 +276,23 @@ def items_from_snapshot(snapshot: dict, desk_context: dict | None = None,
                             f"[news] {sym} n={ns['count']} wire={ns.get('wire_sentiment')} "
                             f"board={ns.get('board_sentiment')} \"{ns.get('latest_headline')}\"",
                             PRIORITY["news"], topics=[sym]))
+    # The overnight rumor board, always with its calibration attached —
+    # rumors without a track record are just noise wearing a suit.
+    if rumors and rumors.get("scan"):
+        scan = rumors["scan"]
+        cal = rumors.get("calibration") or {}
+        cal_txt = "; ".join(
+            f"{k}: hit {v['direction_hit_rate']:.0%} of {v['graded']}"
+            for k, v in sorted(cal.items())
+            if v.get("direction_hit_rate") is not None) or "ungraded so far"
+        for sym, t in sorted((scan.get("tickers") or {}).items(),
+                             key=lambda kv: -kv[1].get("mentions", 0))[:5]:
+            out.append(Item(
+                f"rumor:{sym}",
+                f"[rumor] {sym} overnight x{t.get('mentions')} "
+                f"sentiment {t.get('sentiment'):+d} "
+                f"(track record — {cal_txt})",
+                PRIORITY["news"], topics=[sym]))
     if desk_context:
         if desk_context.get("identity"):
             out.append(Item("identity", "[identity] " + desk_context["identity"],

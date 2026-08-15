@@ -155,6 +155,29 @@ def reject_histogram(ledger_entries: list[dict]) -> dict:
     return dict(reasons.most_common(10))
 
 
+def slippage_stats(fills: list[dict]) -> dict:
+    """What crossing the spread cost, aggregated from per-fill measurements.
+
+    `total_vs_mid` is the dollars a marketable limit at mid would have
+    saved across all fills — the number that decides whether building
+    smarter order routing is worth it. Fills recorded before slippage
+    measurement existed simply don't count toward the sample.
+    """
+    slips = [f["slippage"] for f in fills
+             if isinstance(f.get("slippage"), dict)
+             and f["slippage"].get("vs_mid_total") is not None]
+    if not slips:
+        return {"measured_fills": 0}
+    totals = [float(s["vs_mid_total"]) for s in slips]
+    return {
+        "measured_fills": len(slips),
+        "total_vs_mid": round(sum(totals), 2),
+        "avg_per_fill": round(sum(totals) / len(slips), 2),
+        "avg_half_spread": round(
+            sum(float(s.get("half_spread") or 0.0) for s in slips) / len(slips), 4),
+    }
+
+
 def judgment_cost(token_entries: list[dict]) -> dict:
     """What the LLM tiers cost — the number plan-alpha must beat."""
     spent = [e for e in token_entries if e.get("status") in ("ok", "dry_run")]
@@ -195,6 +218,7 @@ def scoreboard(data_dir: str, desk_dir: str) -> dict:
     return {
         "per_trade": trade_stats(round_trips(fills)),
         "per_day": daily_stats(journal),
+        "slippage": slippage_stats(fills),
         "hunch_calibration": hunch_calibration(ledger, journal),
         "risk_rejects": reject_histogram(ledger),
         "judgment_cost": judgment_cost(tokens),

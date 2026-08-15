@@ -143,11 +143,15 @@ class SchwabClient:
             if not quote:
                 out[ours] = {"error": "no quote"}
                 continue
+            # securityStatus "Halted"/"Closed" means the last print is
+            # frozen — decide() refuses to act on halted names either way.
+            status = str(quote.get("securityStatus") or "").lower()
             out[ours] = {
                 "symbol": ours,
                 "bid": float(quote.get("bidPrice") or 0.0),
                 "ask": float(quote.get("askPrice") or 0.0),
                 "last": float(quote.get("lastPrice") or 0.0),
+                "halted": status == "halted",
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             }
         return out

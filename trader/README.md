@@ -45,6 +45,9 @@ trader/
 │   ├── desk.py          # persistent desk memory: journal, beliefs, identity
 │   ├── ledger.py        # append-only JSONL audit trail
 │   ├── metrics.py       # the scoreboard: expectancy, calibration, cost of judgment
+│   ├── events.py        # scheduled-event guard: FOMC/CPI/earnings blackout windows
+│   ├── rumors.py        # overnight subreddit scan + next-day backtrace (aggregate only)
+│   ├── edgar.py         # SEC EDGAR 8-K feed for watched names (public Atom feed)
 │   ├── schwab.py        # REAL Schwab data client (read-only; orders structurally disabled)
 │   ├── stream.py        # Schwab Streamer websocket: real-time ticks, REST fallback
 │   ├── shadow.py        # shadow broker: real quotes in, orders fill in a local book
@@ -58,6 +61,7 @@ trader/
 │   ├── AGENTS.md        # the fleet: tiers, the daily clock, authority, PDT rules, gates
 │   ├── STRATEGY.md      # ORB+VWAP baseline, benchmarks, honest caveats
 │   ├── OPTIONS.md       # options day trading: long-only, premium caps, the honest odds
+│   ├── EDGE.md          # the edge doctrine: legal advantages, and the line we don't cross
 │   ├── PERSISTENCE.md   # what a server can and can't give Claude; desk conventions
 │   └── NEEDS.md         # what Claude needs from the human, and the deal terms
 └── tests/

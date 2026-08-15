@@ -1,0 +1,12 @@
+[Unit]
+Description=Poll EDGAR for new 8-K filings every 10 minutes during extended hours
+
+[Timer]
+# Filings cluster around the open and after the close; a 10-minute cadence
+# over the extended day is polite to the SEC and fast enough for a desk
+# that plans at 09:35 and doesn't scalp headlines.
+OnCalendar=Mon..Fri 06..20:00/10
+Persistent=false
+
+[Install]
+WantedBy=timers.target
