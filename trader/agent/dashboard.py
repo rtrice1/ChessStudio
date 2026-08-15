@@ -352,6 +352,12 @@ function signals(s){
     const siCell=si==null?"—":`<span class="${si>=15?"neg":""}">${Number(si).toFixed(0)}%</span>`;
     const badges=(alertsBy[sym]||[]).map(k=>`<span class="badge">${k}</span>`).join("");
     const mh=i.macd_hist,adx=i.adx,pb=i.bb_percent_b,rv=i.rel_volume;
+    const PHASE={accelerating:['▲▲','var(--good)','vel + accel both up'],
+      exhausting:['▲▼','#bd8b1e','up but decelerating — inflection risk'],
+      basing:['▼▲','#4a94e8','down-move decelerating — turn forming'],
+      falling:['▼▼','var(--bad)','vel + accel both down']};
+    const ph=PHASE[i.momentum_phase];
+    const phCell=ph?`<span style="color:${ph[1]}" title="${ph[2]} (roc_accel ${i.roc_accel==null?"?":Number(i.roc_accel).toFixed(2)})">${ph[0]}</span>`:"—";
     const macdCell=mh==null?"—":`<span class="${cls(mh)}">${sign(mh)}${Number(mh).toFixed(2)}</span>`;
     const adxCell=adx==null?"—":`${Number(adx).toFixed(0)}${adx>=25?" ▲":""}`;
     const pbCell=pb==null?"—":bullet(pb,0,1,[0.5]);
@@ -360,13 +366,14 @@ function signals(s){
       `<td class="num">${scoreCell}</td><td class="num">${fmt(last)}</td>`+
       `<td class="num ${cls(chg)}">${chg==null?"—":sign(chg)+chg.toFixed(2)+"%"}</td>`+
       `<td>${bullet(i.rsi14,0,100,[30,70])}</td><td class="num">${macdCell}</td>`+
+      `<td style="text-align:center">${phCell}</td>`+
       `<td class="num">${adxCell}</td><td>${pbCell}</td><td class="num">${rvCell}</td>`+
       `<td>${vsV}</td><td>${rangePos}</td>`+
       `<td class="num">${senti}</td><td class="num">${velCell}</td>`+
       `<td class="num">${siCell}</td><td>${badges}</td></tr>`;
   }).join("");
   $("signals").innerHTML=`<tr><th>sym</th><th>score</th><th>last</th><th>day</th><th>rsi (30/70)</th>`+
-    `<th>macd-h</th><th>adx</th><th>%b</th><th>rvol</th>`+
+    `<th>macd-h</th><th>phase</th><th>adx</th><th>%b</th><th>rvol</th>`+
     `<th>vwap</th><th>range pos</th><th>wire/board</th><th>vel</th><th>si</th><th>alerts</th></tr>${rows}`;
 }
 function meters(s){
@@ -472,11 +479,20 @@ function rumors(s){
 function beliefs(s){
   $("beliefs").innerHTML=Object.entries(s.beliefs||{}).map(([k,v])=>`<div>• <b>${k}</b>: ${String(v).slice(0,120)}</div>`).join("")||"—";
 }
-const es=new EventSource("/events");
-es.onmessage=m=>{lastMsg=Date.now();const s=JSON.parse(m.data);
+// One broken panel must never blank the whole desk: each renders inside
+// its own try/catch, and any failure lands visibly in the tab title.
+const PANELS=[["tiles",tiles],["chips",chips],["spark",s=>spark(s.equity_series)],
+  ["minis",minis],["signals",signals],["meters",meters],["dailyPnl",dailyPnl],
+  ["positions",positions],["feed",feed],["plan",plan],["rumors",rumors],
+  ["score",score],["beliefs",beliefs]];
+function render(s){
   $("halt").style.display=s.halted?"block":"none";
-  tiles(s);chips(s);spark(s.equity_series);minis(s);signals(s);meters(s);
-  dailyPnl(s);positions(s);feed(s);plan(s);rumors(s);score(s);beliefs(s);};
+  for(const [name,fn] of PANELS){
+    try{fn(s)}catch(e){document.title="DESK "+name+" error: "+e.message}}}
+const es=new EventSource("/events");
+es.onmessage=m=>{lastMsg=Date.now();
+  try{render(JSON.parse(m.data))}
+  catch(e){document.title="DESK parse error: "+e.message}};
 setInterval(()=>{$("dot").className="dot"+(Date.now()-lastMsg>8000?" stale":"")},2000);
 </script></body></html>"""
 

@@ -54,14 +54,20 @@ def mention_velocity(items: list[dict]) -> dict:
         except ValueError:
             continue
     if not stamps:
-        return {"recent": 0, "prior": 0, "ratio": None}
+        return {"recent": 0, "prior": 0, "ratio": None, "accel": None}
     now = max(stamps)
     hour = 3600.0
     recent = sum(1 for s in stamps if (now - s).total_seconds() <= hour)
     prior = sum(1 for s in stamps
                 if hour < (now - s).total_seconds() <= 2 * hour)
+    prior2 = sum(1 for s in stamps
+                 if 2 * hour < (now - s).total_seconds() <= 3 * hour)
     ratio = (recent / prior) if prior else None
-    return {"recent": recent, "prior": prior, "ratio": ratio}
+    # Discrete second difference of the mention counts. Only meaningful
+    # once the window depth exists (a capped 10-item mock feed rarely has
+    # it) — None until all three windows have any history behind them.
+    accel = (recent - 2 * prior + prior2) if (prior or prior2) else None
+    return {"recent": recent, "prior": prior, "ratio": ratio, "accel": accel}
 
 
 def summarize_news(news: dict) -> dict:

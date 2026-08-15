@@ -55,6 +55,13 @@ class DayPlan:
     # slots exist, score_entry() ranks them and only the best trade.
     max_positions: int = 4
     max_entries_per_cycle: int = 2
+    # Inflection exits: once a position has >= inflection_exit_atr ATRs of
+    # profit, momentum rolling from accelerating to decelerating (velocity
+    # still up, acceleration negative, MACD histogram falling) sells into
+    # the theoretical inflection instead of riding to the full ATR target
+    # and giving the middle back.
+    take_inflection_exits: bool = True
+    inflection_exit_atr: float = 1.0
     # Premium spent per options entry, as a fraction of equity. This is the
     # full amount at risk — a 0DTE option can and does go to zero.
     premium_per_trade_pct: float = 0.01
@@ -161,6 +168,20 @@ def score_entry(ind: dict, news: dict | None = None,
         score += 0.25
         reasons.append(f"roc {roc10:+.1f}")
 
+    # The second derivative: a breakout that's already decelerating is
+    # being chased into its own inflection — the worst fill on the board.
+    phase = ind.get("momentum_phase")
+    if phase == "accelerating":
+        score += 0.5
+        reasons.append("accelerating")
+    elif phase == "exhausting":
+        score -= 0.75
+        reasons.append("decelerating (inflection risk)")
+    hist_slope = ind.get("macd_hist_slope")
+    if hist_slope is not None:
+        score += 0.25 if hist_slope > 0 else -0.25
+        reasons.append(f"macd-h slope {'+' if hist_slope > 0 else '-'}")
+
     if news:
         sent = (int(news.get("wire_sentiment") or 0)
                 + int(news.get("board_sentiment") or 0))
@@ -237,6 +258,16 @@ def decide(snapshot: dict, ctx: SessionContext) -> list[Decision]:
             elif last >= target:
                 decisions.append(Decision(symbol, "SELL", qty,
                                           f"ATR target: {last:.2f} >= {target:.2f}"))
+            elif (plan.take_inflection_exits and atr
+                  and last >= avg + plan.inflection_exit_atr * atr
+                  and ind.get("momentum_phase") == "exhausting"
+                  and (ind.get("macd_hist_slope") or 0) < 0):
+                decisions.append(Decision(
+                    symbol, "SELL", qty,
+                    f"inflection exit: +{(last - avg) / atr:.1f} ATR in "
+                    f"profit and decelerating (roc_accel "
+                    f"{ind.get('roc_accel'):+.2f}, macd-h slope "
+                    f"{ind.get('macd_hist_slope'):+.3f})"))
             elif vwap and last < vwap * (1 - plan.vwap_fail_pct):
                 decisions.append(Decision(symbol, "SELL", qty,
                                           f"lost VWAP: {last:.2f} < {vwap:.2f}"))

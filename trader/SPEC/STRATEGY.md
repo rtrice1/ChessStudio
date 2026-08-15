@@ -14,6 +14,18 @@ large-cap watchlist. This is the default `DayPlan` and runs with no LLM:
 - **Exits:** 1.5×ATR stop, 2.5×ATR target, or a close below VWAP (the
   thesis — buyers in control — is falsified, so the trade is over even
   though neither stop nor target hit).
+- **Inflection exits:** the engine tracks momentum's second derivative
+  (`roc_accel`, the 3-bar change in ROC, confirmed by the MACD histogram
+  slope) and classifies each name's phase: accelerating, exhausting,
+  basing, falling. A winner ≥1 ATR in profit whose phase rolls to
+  *exhausting* — velocity still up, acceleration negative — is sold into
+  the theoretical inflection rather than riding to the full target and
+  giving the middle back. Below 1 ATR of profit it waits: dodging a
+  maybe-inflection isn't worth paying the spread, and the stop is the
+  guard. Entries use the same signal in reverse — a decelerating
+  breakout is being chased into its own top, and `score_entry` docks it
+  hard. Second derivatives of 5-minute bars are noisy, so phase is
+  always a shading input, never a gate on its own.
 - **Selection under budget:** signals fire more often than the book has
   room for, and that's the actual hard problem — you can't buy everything
   you want. Every trigger gets scored (`score_entry`): momentum

@@ -414,6 +414,30 @@ def bollinger(closes: list[float], n: int = 20, k: float = 2.0) -> dict | None:
     }
 
 
+def momentum_phase(velocity: float | None, accel: float | None) -> str | None:
+    """Where we are on the move's curve, from its first two derivatives.
+
+    The inflection is the tradeable moment: velocity still positive with
+    acceleration negative means the move is exhausting — the top is being
+    made WHILE the chart still looks strong. The four phases:
+
+        accelerating  vel > 0, acc > 0   momentum healthy, safe to ride
+        exhausting    vel > 0, acc <= 0  up-move decelerating: inflection
+                                         ahead — take profits, don't chase
+        basing        vel <= 0, acc > 0  down-move decelerating: potential
+                                         turn forming
+        falling       vel <= 0, acc <= 0 momentum against us
+
+    Second derivatives of noisy 5-minute bars are themselves noisy — this
+    is a shading input (scores, early exits), never a gate on its own.
+    """
+    if velocity is None or accel is None:
+        return None
+    if velocity > 0:
+        return "accelerating" if accel > 0 else "exhausting"
+    return "basing" if accel > 0 else "falling"
+
+
 def obv(candles: list[dict]) -> float | None:
     """On-Balance Volume."""
     if len(candles) < 2:
@@ -481,6 +505,9 @@ def summarize(candles: list[dict]) -> dict:
             "plus_di": None,
             "minus_di": None,
             "roc10": None,
+            "roc_accel": None,
+            "macd_hist_slope": None,
+            "momentum_phase": None,
             "bb_percent_b": None,
             "bb_bandwidth": None,
             "bb_upper": None,
@@ -529,6 +556,21 @@ def summarize(candles: list[dict]) -> dict:
 
     roc10_val = roc(closes, 10)
 
+    # Acceleration: the discrete second derivative, as the change in
+    # velocity over the last 3 bars. Paired with velocity it locates the
+    # theoretical inflection — where a move is topping (or basing) while
+    # the price series alone still looks healthy.
+    ACCEL_LAG = 3
+    roc_prev = roc(closes[:-ACCEL_LAG], 10) if len(closes) > ACCEL_LAG else None
+    roc_accel = (roc10_val - roc_prev
+                 if roc10_val is not None and roc_prev is not None else None)
+
+    macd_prev = macd(closes[:-ACCEL_LAG]) if len(closes) > ACCEL_LAG else None
+    macd_hist_slope = (macd_hist - macd_prev["hist"]
+                       if macd_hist is not None and macd_prev else None)
+
+    phase = momentum_phase(roc10_val, roc_accel)
+
     bb_val = bollinger(closes, 20)
     bb_percent_b = bb_val["percent_b"] if bb_val else None
     bb_bandwidth = bb_val["bandwidth"] if bb_val else None
@@ -558,6 +600,9 @@ def summarize(candles: list[dict]) -> dict:
         "plus_di": plus_di,
         "minus_di": minus_di,
         "roc10": roc10_val,
+        "roc_accel": roc_accel,
+        "macd_hist_slope": macd_hist_slope,
+        "momentum_phase": phase,
         "bb_percent_b": bb_percent_b,
         "bb_bandwidth": bb_bandwidth,
         "bb_upper": bb_upper,

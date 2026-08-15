@@ -62,6 +62,11 @@ DAY_PLAN_SCHEMA = {
                                          "more signals fire than slots exist, code "
                                          "ranks them by momentum/news/gut score "
                                          "and only the best trade."},
+        "take_inflection_exits": {
+            "type": "boolean",
+            "description": "Optional (default true): sell winners into "
+                           "momentum deceleration (inflection) instead of "
+                           "waiting for the full ATR target."},
         "rationale": {"type": "string",
                       "description": "One paragraph: why this plan, citing the evidence used"},
     },
@@ -163,6 +168,7 @@ def apply_day_plan(result: dict, data_dir: str) -> DayPlan:
                     if result.get("instrument") in ("shares", "calls")
                     else "shares"),
         max_positions=min(6, max(1, int(result.get("max_positions") or 4))),
+        take_inflection_exits=bool(result.get("take_inflection_exits", True)),
         rationale=str(result.get("rationale", ""))[:2000],
     )
     os.makedirs(data_dir, exist_ok=True)
