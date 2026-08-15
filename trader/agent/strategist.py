@@ -49,6 +49,11 @@ class DayPlan:
     # "shares" or "calls" — with "calls", breakout signals are expressed by
     # buying near-the-money 0DTE calls instead of stock. LONG ONLY, always.
     instrument: str = "shares"
+    # The position budget: at most this many concurrent positions, and at
+    # most this many new entries per cycle. When more signals fire than
+    # slots exist, score_entry() ranks them and only the best trade.
+    max_positions: int = 4
+    max_entries_per_cycle: int = 2
     # Premium spent per options entry, as a fraction of equity. This is the
     # full amount at risk — a 0DTE option can and does go to zero.
     premium_per_trade_pct: float = 0.01
@@ -67,6 +72,102 @@ class SessionContext:
     # 0.0 at the open, 1.0 at the close; the runner advances this.
     session_pct: float = 0.0
     trades_today: int = 0
+    # The gut's read on the day, set by the runner after its gut check.
+    # Shades entry scoring (chop makes chasing costlier); never gates.
+    hunch: dict | None = None
+
+
+def score_entry(ind: dict, news: dict | None = None,
+                hunch: dict | None = None) -> tuple[float, str]:
+    """Rank an entry candidate: momentum confluence, shaded by news and gut.
+
+    Signals fire more often than the position budget allows, so every
+    candidate gets a score and only the best trade. The weights are
+    deliberate: trend strength (ADX) and participation (relative volume)
+    carry the most; news carries little and asymmetrically — the desk
+    belief is that news misleads, so bad news subtracts more than good
+    news adds; the gut hunch doesn't add points, it changes what gets
+    penalized (in suspected chop, weak trends and overextension cost more).
+    """
+    score = 0.0
+    reasons: list[str] = []
+    chop = bool(hunch
+                and hunch.get("suspected_day_type") in ("chop", "open_spike_settle")
+                and float(hunch.get("confidence") or 0) >= 0.5
+                and int(hunch.get("based_on") or 0) >= 3)
+
+    adx = ind.get("adx")
+    if adx is not None:
+        if adx >= 25:
+            score += 1.0
+            reasons.append(f"adx {adx:.0f} trending")
+        elif adx >= 20:
+            score += 0.5
+            reasons.append(f"adx {adx:.0f} building")
+        elif chop:
+            score -= 0.5
+            reasons.append(f"adx {adx:.0f} weak + chop suspected")
+
+    plus_di, minus_di = ind.get("plus_di"), ind.get("minus_di")
+    if plus_di is not None and minus_di is not None and plus_di > minus_di:
+        score += 0.5
+        reasons.append("+DI>-DI")
+
+    macd_hist = ind.get("macd_hist")
+    if macd_hist is not None:
+        if macd_hist > 0:
+            score += 1.0
+            reasons.append("macd+")
+        else:
+            score -= 0.5
+            reasons.append("macd-")
+
+    rel_volume = ind.get("rel_volume")
+    if rel_volume is not None:
+        if rel_volume >= 1.5:
+            score += 1.0
+            reasons.append(f"rvol {rel_volume:.1f}")
+        elif rel_volume >= 1.0:
+            score += 0.5
+            reasons.append(f"rvol {rel_volume:.1f}")
+        else:
+            score -= 0.5
+            reasons.append(f"rvol {rel_volume:.1f} thin")
+
+    percent_b = ind.get("bb_percent_b")
+    if percent_b is not None:
+        if percent_b > 1.05:
+            score -= 1.0 if chop else 0.5
+            reasons.append(f"%B {percent_b:.2f} overextended")
+        elif percent_b >= 0.8:
+            score += 0.5
+            reasons.append(f"%B {percent_b:.2f} riding band")
+
+    rsi14 = ind.get("rsi14")
+    if rsi14 is not None:
+        if rsi14 >= 75:
+            score -= 1.0
+            reasons.append(f"rsi {rsi14:.0f} overbought")
+        elif rsi14 >= 50:
+            score += 0.5
+            reasons.append(f"rsi {rsi14:.0f} has room")
+
+    roc10 = ind.get("roc10")
+    if roc10 is not None and roc10 > 0:
+        score += 0.25
+        reasons.append(f"roc {roc10:+.1f}")
+
+    if news:
+        sent = (int(news.get("wire_sentiment") or 0)
+                + int(news.get("board_sentiment") or 0))
+        if sent < 0:
+            score -= 0.75
+            reasons.append(f"news {sent:+d}")
+        elif sent > 0:
+            score += 0.25
+            reasons.append(f"news {sent:+d}")
+
+    return score, ", ".join(reasons) if reasons else "no confluence data"
 
 
 def flatten_all(account: dict, reason: str) -> list[Decision]:
@@ -83,18 +184,27 @@ def decide(snapshot: dict, ctx: SessionContext) -> list[Decision]:
     """Mechanical intraday pass over a poller snapshot, executing ctx.plan.
 
     Entry: price breaks above the opening range high while holding above
-           VWAP (participation confirms the break). Risk-based sizing:
+           VWAP (participation confirms the break). Every trigger is then
+           SCORED — momentum confluence shaded by news and gut — and only
+           the top-ranked fit under the plan's position budget: at most
+           max_entries_per_cycle new entries, never holding more than
+           max_positions names. Risk-based sizing:
            (per_trade_risk_pct * equity) / (entry - stop).
     Exit:  ATR stop, ATR target, or a close below VWAP (thesis failed).
+           Exits are never budgeted, ranked, or deferred.
     Late-session entries are refused by risk.py; the runner flattens at EOD.
     """
     account = snapshot["account"]
     quotes = snapshot["quotes"]
     indicators = snapshot["indicators"]
+    news_summary = (snapshot.get("news") or {}).get("summary") or {}
     equity = float(account.get("equity", 0.0))
     positions = {p["symbol"]: p for p in account.get("positions", [])}
     plan = ctx.plan
     decisions: list[Decision] = []
+    candidates: list[tuple[float, Decision]] = []
+    held_count = sum(1 for p in account.get("positions", [])
+                     if int(p.get("quantity", 0)) > 0)
 
     for symbol, ind in indicators.items():
         quote = quotes.get(symbol) or {}
@@ -142,11 +252,23 @@ def decide(snapshot: dict, ctx: SessionContext) -> list[Decision]:
                                ctx.limits.max_position_pct) * equity
             qty = min(qty, int(notional_cap // last))
             if qty > 0:
-                decisions.append(Decision(
+                score, why = score_entry(ind, news_summary.get(symbol),
+                                         ctx.hunch)
+                candidates.append((score, Decision(
                     symbol, "BUY", qty,
                     f"ORB: {last:.2f} > range high {range_high:.2f}, "
                     f"above VWAP {vwap:.2f}; stop {stop:.2f}, "
-                    f"risking {plan.per_trade_risk_pct:.2%} of equity"))
+                    f"risking {plan.per_trade_risk_pct:.2%} of equity"
+                    f" | score {score:+.2f} ({why})")))
+
+    # --- the position budget: rank the triggers, trade only the best ---
+    slots = max(0, min(plan.max_entries_per_cycle,
+                       plan.max_positions - held_count))
+    candidates.sort(key=lambda c: c[0], reverse=True)
+    for rank, (score, d) in enumerate(candidates[:slots], start=1):
+        if len(candidates) > slots:
+            d.rationale += f" | won slot {rank}/{slots} over {len(candidates) - slots} rivals"
+        decisions.append(d)
     return decisions
 
 

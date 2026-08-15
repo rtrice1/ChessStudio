@@ -91,6 +91,7 @@ def main() -> int:
                 features = features_from_client(client, DEFAULT_SYMBOLS)
                 if features:
                     hunch = gut.hunch(features)
+                    ctx.hunch = hunch  # entry scoring shades on it from here
                     ledger.record("gut_check", {"features": features, "hunch": hunch})
                     print(f"{ctx.session_pct:5.0%} | gut check: {hunch['note']}")
                     # Build the focused context a Tier-3 invocation would get

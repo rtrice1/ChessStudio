@@ -57,11 +57,17 @@ DAY_PLAN_SCHEMA = {
         "target_atr": {"type": "number"},
         "instrument": {"type": "string", "enum": ["shares", "calls"],
                        "description": "Express entries as stock or long 0DTE calls"},
+        "max_positions": {"type": "integer",
+                          "description": "Concurrent position budget, 1-6. When "
+                                         "more signals fire than slots exist, code "
+                                         "ranks them by momentum/news/gut score "
+                                         "and only the best trade."},
         "rationale": {"type": "string",
                       "description": "One paragraph: why this plan, citing the evidence used"},
     },
     "required": ["symbols", "bias_off", "per_trade_risk_pct",
-                 "stop_atr", "target_atr", "instrument", "rationale"],
+                 "stop_atr", "target_atr", "instrument", "max_positions",
+                 "rationale"],
     "additionalProperties": False,
 }
 
@@ -154,6 +160,7 @@ def apply_day_plan(result: dict, data_dir: str) -> DayPlan:
         instrument=(result.get("instrument")
                     if result.get("instrument") in ("shares", "calls")
                     else "shares"),
+        max_positions=min(6, max(1, int(result.get("max_positions") or 4))),
         rationale=str(result.get("rationale", ""))[:2000],
     )
     os.makedirs(data_dir, exist_ok=True)

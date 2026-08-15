@@ -19,6 +19,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from agent.metrics import scoreboard as compute_scoreboard
+from agent.strategist import score_entry
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 EVENT_KINDS = ("fill", "risk_reject", "gut_check", "focus", "daily_stop",
@@ -56,6 +57,9 @@ class StateAssembler:
         self.data_dir, self.desk_dir = data_dir, desk_dir
         self.equity_series: list[list] = []   # [iso_ts, equity]
         self.price_series: dict[str, list] = {}   # symbol -> [[hh:mm:ss, last]]
+        # symbol -> [[hh:mm:ss, vwap, bb_upper, bb_lower]] — same ticks as
+        # price_series, so the chart overlays share x positions.
+        self.overlay_series: dict[str, list] = {}
         self._score_cache: dict | None = None
         self._score_at = 0.0
 
@@ -64,6 +68,7 @@ class StateAssembler:
         account = latest.get("account") or {}
         equity = account.get("equity")
         quotes = latest.get("quotes") or {}
+        indicators = latest.get("indicators") or {}
         ts = latest.get("timestamp") or ""
         if equity is not None:
             if not self.equity_series or self.equity_series[-1][0] != ts:
@@ -75,6 +80,11 @@ class StateAssembler:
                         series = self.price_series.setdefault(sym, [])
                         series.append([clock, float(q["last"])])
                         del series[:-240]
+                        ind = indicators.get(sym) or {}
+                        over = self.overlay_series.setdefault(sym, [])
+                        over.append([clock, ind.get("vwap"),
+                                     ind.get("bb_upper"), ind.get("bb_lower")])
+                        del over[:-240]
 
         ledger = _read_jsonl_tail(os.path.join(self.data_dir, "ledger.jsonl"), 400)
         events = [e for e in ledger if e.get("kind") in EVENT_KINDS][-25:]
@@ -89,11 +99,29 @@ class StateAssembler:
         journal = _read_jsonl_tail(os.path.join(self.desk_dir, "journal.jsonl"), 40)
         beliefs = _read_json(os.path.join(self.desk_dir, "beliefs.json")) or {}
         gut_checks = [e for e in ledger if e.get("kind") == "gut_check"]
-        # The 40/day risk cap counts entries (BUYs); mirror that here so the
-        # meter measures headroom against the actual rule.
+        hunch = gut_checks[-1].get("hunch") if gut_checks else None
+        news_summary = (latest.get("news") or {}).get("summary") or {}
+        # The same ranking the engine uses for the position budget — every
+        # watched name gets a live score so the "best" is visible before
+        # (and whether or not) it triggers.
+        entry_scores = {}
+        for sym, ind in indicators.items():
+            try:
+                sc, why = score_entry(ind, news_summary.get(sym), hunch)
+                entry_scores[sym] = {"score": round(sc, 2), "why": why}
+            except Exception:
+                continue
+        # The 40/day risk cap counts entries (BUYs) per SESSION — several
+        # sim days can share one calendar date, so scope to the last
+        # session_start rather than the date, mirroring ctx.trades_today.
+        session_ts = ""
+        for e in ledger:
+            if e.get("kind") in ("session_start", "live_session_start"):
+                session_ts = e.get("ts", "")
         fills_today = [e for e in ledger if e.get("kind") == "fill"
                        and e.get("action") == "BUY"
-                       and e.get("ts", "")[:10] == ts[:10]]
+                       and (e.get("ts", "") >= session_ts if session_ts
+                            else e.get("ts", "")[:10] == ts[:10])]
         return {
             "ts": time.time(),
             "account": account,
@@ -102,9 +130,11 @@ class StateAssembler:
                           if p.get("quantity")],
             "equity_series": self.equity_series,
             "price_series": self.price_series,
+            "overlay_series": self.overlay_series,
             "quotes": quotes,
-            "indicators": latest.get("indicators") or {},
-            "news_summary": ((latest.get("news") or {}).get("summary") or {}),
+            "indicators": indicators,
+            "news_summary": news_summary,
+            "entry_scores": entry_scores,
             "events": list(reversed(events)),
             "plan": _read_json(os.path.join(self.data_dir, "day_plan.json")),
             "halted": os.path.exists(os.path.join(self.data_dir, "HALT")),
@@ -113,7 +143,7 @@ class StateAssembler:
                            "pnl_pct": d.get("pnl_pct")}
                           for d in journal if d.get("kind") == "trading_day"
                           and d.get("pnl_pct") is not None][-20:],
-            "hunch": (gut_checks[-1].get("hunch") if gut_checks else None),
+            "hunch": hunch,
             "trades_today": len(fills_today),
             "beliefs": {k: v.get("value") if isinstance(v, dict) else v
                         for k, v in beliefs.items()},
@@ -171,7 +201,13 @@ small{color:var(--muted)}
   <div class="panel"><h2>Equity (intraday)</h2><svg id="spark" width="100%" height="130" viewBox="0 0 600 130"></svg></div>
   <div class="panel"><h2>Risk limits — headroom</h2><div id="meters"></div></div>
   <div class="panel wide"><h2>Signal board</h2><table id="signals"></table></div>
-  <div class="panel wide"><h2>Watchlist (intraday last)</h2><div class="minis" id="minis"></div></div>
+  <div class="panel wide"><h2>Watchlist (intraday last)</h2>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:6px">
+      <span style="color:#4a94e8">—</span> price&ensp;
+      <span style="color:#bd8b1e">—</span> vwap&ensp;
+      <span style="color:#4a94e8;opacity:.35">▮</span> bollinger(20,2)&ensp;
+      <span style="color:#656d76">┄</span> opening range</div>
+    <div class="minis" id="minis"></div></div>
   <div class="panel"><h2>Daily P&amp;L (%)</h2><svg id="dailypnl" width="100%" height="120" viewBox="0 0 600 120"></svg></div>
   <div class="panel"><h2>Positions</h2><table id="positions"></table></div>
   <div class="panel"><h2>Live feed</h2><div class="feed" id="feed"></div></div>
@@ -232,17 +268,40 @@ function spark(series){
   hover(svg,series,g);
 }
 function minis(s){
-  const box=$("minis"),ps=s.price_series||{};
+  const box=$("minis"),ps=s.price_series||{},os=s.overlay_series||{};
   box.innerHTML=Object.keys(ps).sort().map(sym=>{
     const series=ps[sym];if(!series||series.length<2)return "";
+    const over=os[sym]||[];
     const ind=(s.indicators||{})[sym]||{};
     const last=series[series.length-1][1],open=ind.day_open||series[0][1];
     const chg=open?(last-open)/open*100:0;
-    const g=linePath(series,150,44,4,4);
+    // One y-scale shared by price, vwap, bands, and range levels — the
+    // overlays only mean something on the same axis as the price.
+    const vals=series.map(p=>p[1]);
+    over.forEach(o=>{for(let j=1;j<4;j++)if(o[j]!=null)vals.push(o[j])});
+    if(ind.range_high!=null)vals.push(ind.range_high);
+    if(ind.range_low!=null)vals.push(ind.range_low);
+    const min=Math.min(...vals),max=Math.max(...vals),pad=(max-min)||1;
+    const W=150,H=44;
+    const X=i=>i/(series.length-1)*(W-8)+4,Y=v=>(H-4)-((v-min)/pad)*(H-8);
+    const path=pts=>pts.map((p,k)=>`${k?"L":"M"}${p[0].toFixed(1)},${p[1].toFixed(1)}`).join("");
+    // overlays were appended on the same ticks as price; align by tail offset
+    const off=series.length-over.length;
+    const oPts=j=>over.map((o,i)=>o[j]==null?null:[X(Math.max(0,i+off)),Y(o[j])]).filter(Boolean);
+    const vw=oPts(1),bu=oPts(2),bl=oPts(3);
+    let band="";
+    if(bu.length>1&&bl.length>1)
+      band=`<path d="${path(bu)}${[...bl].reverse().map(p=>`L${p[0].toFixed(1)},${p[1].toFixed(1)}`).join("")}Z" fill="#4a94e8" opacity="0.10"/>`;
+    const rng=[["range_high",ind.range_high],["range_low",ind.range_low]]
+      .filter(([,v])=>v!=null)
+      .map(([,v])=>`<line x1="4" y1="${Y(v).toFixed(1)}" x2="${W-4}" y2="${Y(v).toFixed(1)}" stroke="#656d76" stroke-dasharray="3,3" stroke-width="0.8"/>`)
+      .join("");
     return `<div class="mini"><div class="h"><b style="color:var(--ink)">${sym}</b>`+
       `<span class="${cls(chg)}">${sign(chg)}${chg.toFixed(2)}%</span></div>`+
       `<svg width="100%" height="44" viewBox="0 0 150 44" preserveAspectRatio="none">`+
-      `<path d="${g.d}" fill="none" stroke="#58a6ff" stroke-width="1.5"/></svg></div>`;
+      band+rng+
+      (vw.length>1?`<path d="${path(vw)}" fill="none" stroke="#bd8b1e" stroke-width="1"/>`:"")+
+      `<path d="${path(series.map((p,i)=>[X(i),Y(p[1])]))}" fill="none" stroke="#4a94e8" stroke-width="1.5"/></svg></div>`;
   }).join("");
 }
 function bullet(v,lo,hi,ticks){
@@ -255,9 +314,16 @@ function bullet(v,lo,hi,ticks){
 }
 function signals(s){
   const ind=s.indicators||{},q=s.quotes||{},news=s.news_summary||{};
+  const scores=s.entry_scores||{};
   const alertsBy={};(s.alerts||[]).forEach(a=>{(alertsBy[a.symbol]=alertsBy[a.symbol]||[]).push(a.kind)});
-  const rows=Object.keys(ind).sort().map(sym=>{
+  // Ranked by entry score — the table IS the queue for the position budget.
+  const syms=Object.keys(ind).sort((a,b)=>
+    (((scores[b]||{}).score)??-99)-(((scores[a]||{}).score)??-99)||a.localeCompare(b));
+  const rows=syms.map(sym=>{
     const i=ind[sym],quote=q[sym]||{},last=quote.last;
+    const es=scores[sym]||{};
+    const scoreCell=es.score==null?"—":
+      `<span class="${cls(es.score)}" title="${(es.why||"").replace(/"/g,"'")}">${sign(es.score)}${Number(es.score).toFixed(2)}</span>`;
     const chg=i.day_open&&last?(last-i.day_open)/i.day_open*100:null;
     const vsV=(i.vwap&&last)?(last>=i.vwap?'<span class="pos">above</span>':'<span class="neg">below</span>'):"—";
     const rangePos=(i.range_low!=null&&i.range_high!=null&&last!=null)
@@ -270,14 +336,15 @@ function signals(s){
     const adxCell=adx==null?"—":`${Number(adx).toFixed(0)}${adx>=25?" ▲":""}`;
     const pbCell=pb==null?"—":bullet(pb,0,1,[0.5]);
     const rvCell=rv==null?"—":`<span class="${rv>1.5?"pos":""}">${Number(rv).toFixed(1)}x</span>`;
-    return `<tr><td style="color:var(--ink)">${sym}</td><td class="num">${fmt(last)}</td>`+
+    return `<tr><td style="color:var(--ink)">${sym}</td>`+
+      `<td class="num">${scoreCell}</td><td class="num">${fmt(last)}</td>`+
       `<td class="num ${cls(chg)}">${chg==null?"—":sign(chg)+chg.toFixed(2)+"%"}</td>`+
       `<td>${bullet(i.rsi14,0,100,[30,70])}</td><td class="num">${macdCell}</td>`+
       `<td class="num">${adxCell}</td><td>${pbCell}</td><td class="num">${rvCell}</td>`+
       `<td>${vsV}</td><td>${rangePos}</td>`+
       `<td class="num">${senti}</td><td>${badges}</td></tr>`;
   }).join("");
-  $("signals").innerHTML=`<tr><th>sym</th><th>last</th><th>day</th><th>rsi (30/70)</th>`+
+  $("signals").innerHTML=`<tr><th>sym</th><th>score</th><th>last</th><th>day</th><th>rsi (30/70)</th>`+
     `<th>macd-h</th><th>adx</th><th>%b</th><th>rvol</th>`+
     `<th>vwap</th><th>range pos</th><th>wire/board</th><th>alerts</th></tr>${rows}`;
 }
@@ -318,6 +385,7 @@ function chips(s){
   $("chips").innerHTML=
     (h&&h.suspected_day_type?`<span class="chip">gut: ${h.suspected_day_type} (${h.based_on} days)</span>`:"")+
     `<span class="chip">instrument: ${(p&&p.instrument)||"shares"}</span>`+
+    `<span class="chip">book: ${(s.positions||[]).length}/${(p&&p.max_positions)||4} slots</span>`+
     `<span class="chip">trades: ${s.trades_today||0}/40</span>`;
 }
 function positions(s){
@@ -341,7 +409,8 @@ function feed(s){
 function plan(s){
   const p=s.plan;
   $("plan").textContent=p?`[${p.instrument||"shares"}] risk ${p.per_trade_risk_pct}, `+
-    `stops ${p.stop_atr}/${p.target_atr} ATR — ${(p.rationale||"").slice(0,300)}`
+    `stops ${p.stop_atr}/${p.target_atr} ATR, `+
+    `${p.max_positions||4} position slots — ${(p.rationale||"").slice(0,300)}`
     :"default mechanical plan (benchmark)";
 }
 function score(s){

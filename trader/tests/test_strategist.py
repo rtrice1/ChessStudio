@@ -2,7 +2,8 @@
 import unittest
 
 from agent.risk import RiskLimits, check_order
-from agent.strategist import DayPlan, SessionContext, decide, flatten_all
+from agent.strategist import (DayPlan, SessionContext, decide, flatten_all,
+                              score_entry)
 
 
 def account(cash=100_000.0, equity=100_000.0, positions=None):
@@ -45,6 +46,89 @@ class TestDayRiskRules(unittest.TestCase):
         limits = RiskLimits()
         self.assertEqual(limits.max_daily_trades, 40)
         self.assertLess(limits.entry_cutoff_session_pct, 1.0)
+
+
+# Same ORB breakout trigger, very different momentum quality.
+IND_STRONG = {**IND_BREAKOUT, "adx": 30.0, "plus_di": 25.0, "minus_di": 10.0,
+              "macd_hist": 0.5, "rel_volume": 1.8, "bb_percent_b": 0.9,
+              "roc10": 1.2}
+IND_WEAK = {**IND_BREAKOUT, "adx": 12.0, "macd_hist": -0.1,
+            "rel_volume": 0.6, "bb_percent_b": 1.2}
+
+
+class TestEntryScoring(unittest.TestCase):
+    def test_confluence_outranks_weak_momentum(self):
+        strong, why = score_entry(IND_STRONG)
+        weak, _ = score_entry(IND_WEAK)
+        self.assertGreater(strong, weak)
+        self.assertIn("trending", why)
+
+    def test_news_shading_is_asymmetric(self):
+        # The desk belief: news misleads. Bad news costs more than good
+        # news earns, so a headline can't buy its way into a slot.
+        base, _ = score_entry(IND_STRONG)
+        good, _ = score_entry(IND_STRONG, news={"wire_sentiment": 2,
+                                                "board_sentiment": 1})
+        bad, _ = score_entry(IND_STRONG, news={"wire_sentiment": -2,
+                                               "board_sentiment": -1})
+        self.assertGreater(good, base)
+        self.assertLess(bad, base)
+        self.assertGreater(good - base, 0)
+        self.assertGreater(base - bad, good - base)
+
+    def test_chop_hunch_penalizes_weak_trends_and_chasing(self):
+        hunch = {"suspected_day_type": "chop", "confidence": 0.7, "based_on": 5}
+        without, _ = score_entry(IND_WEAK)
+        with_chop, why = score_entry(IND_WEAK, hunch=hunch)
+        self.assertLess(with_chop, without)
+        self.assertIn("chop", why)
+
+    def test_low_confidence_hunch_is_ignored(self):
+        hunch = {"suspected_day_type": "chop", "confidence": 0.3, "based_on": 1}
+        self.assertEqual(score_entry(IND_WEAK, hunch=hunch),
+                         score_entry(IND_WEAK))
+
+
+class TestPositionBudget(unittest.TestCase):
+    def three_way_breakout(self, acct=None):
+        quotes = {s: {**QUOTE, "symbol": s} for s in ("AAPL", "MSFT", "NVDA")}
+        mid = {**IND_BREAKOUT, "adx": 26.0, "macd_hist": 0.2, "rel_volume": 1.1}
+        inds = {"AAPL": IND_WEAK, "MSFT": IND_STRONG, "NVDA": mid}
+        return snapshot(acct or account(), quotes, inds)
+
+    def test_only_best_n_trade_when_signals_exceed_slots(self):
+        ctx = SessionContext(day_open_equity=100_000.0,
+                             plan=DayPlan(max_entries_per_cycle=2))
+        decisions = decide(self.three_way_breakout(), ctx)
+        self.assertEqual(len(decisions), 2)
+        # Best score first; the weak-momentum name loses its slot.
+        self.assertEqual([d.symbol for d in decisions], ["MSFT", "NVDA"])
+        self.assertIn("score", decisions[0].rationale)
+        self.assertIn("won slot 1/2", decisions[0].rationale)
+
+    def test_full_book_blocks_all_entries(self):
+        held = [{"symbol": s, "quantity": 10, "averagePrice": 50.0,
+                 "marketValue": 500.0}
+                for s in ("SPY", "QQQ", "TSLA", "JPM")]
+        ctx = SessionContext(day_open_equity=100_000.0,
+                             plan=DayPlan(max_positions=4))
+        decisions = decide(self.three_way_breakout(account(positions=held)), ctx)
+        self.assertEqual([d for d in decisions if d.action == "BUY"], [])
+
+    def test_partial_book_leaves_partial_slots(self):
+        held = [{"symbol": "SPY", "quantity": 10, "averagePrice": 50.0,
+                 "marketValue": 500.0},
+                {"symbol": "QQQ", "quantity": 10, "averagePrice": 50.0,
+                 "marketValue": 500.0},
+                {"symbol": "JPM", "quantity": 10, "averagePrice": 50.0,
+                 "marketValue": 500.0}]
+        ctx = SessionContext(day_open_equity=100_000.0,
+                             plan=DayPlan(max_positions=4,
+                                          max_entries_per_cycle=2))
+        decisions = decide(self.three_way_breakout(account(positions=held)), ctx)
+        # 4-position book with 3 held -> one slot, and the best name gets it.
+        buys = [d for d in decisions if d.action == "BUY"]
+        self.assertEqual([d.symbol for d in buys], ["MSFT"])
 
 
 class TestDayStrategist(unittest.TestCase):

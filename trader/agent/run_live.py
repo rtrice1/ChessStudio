@@ -97,7 +97,7 @@ def main() -> int:
     print(f"SHADOW day | equity {start['equity']:.2f} | "
           f"instrument {ctx.plan.instrument} | plan: {ctx.plan.rationale[:80]}")
 
-    day_stopped = flattened = False
+    day_stopped = flattened = gut_checked = False
     while True:
         now = datetime.now(ET)
         if not args.once:
@@ -109,6 +109,16 @@ def main() -> int:
         ctx.session_pct = session_pct(now)
         try:
             snapshot = poll_once(broker, SYMBOLS, args.data_dir)
+            # One gut check after the opening range forms: the day's
+            # fingerprint shades entry scoring for the rest of the session.
+            if not gut_checked and ctx.session_pct >= 0.10:
+                gut_checked = True
+                features = features_from_client(broker, SYMBOLS)
+                if features:
+                    ctx.hunch = gut.hunch(features)
+                    ledger.record("gut_check", {"features": features,
+                                                "hunch": ctx.hunch})
+                    print(f"{now:%H:%M} | gut check: {ctx.hunch['note']}")
             equity = float(snapshot["account"].get("equity", 0.0))
             drawdown = (ctx.day_open_equity - equity) / ctx.day_open_equity
             if not day_stopped and drawdown >= ctx.limits.daily_loss_halt_pct:

@@ -14,6 +14,19 @@ large-cap watchlist. This is the default `DayPlan` and runs with no LLM:
 - **Exits:** 1.5×ATR stop, 2.5×ATR target, or a close below VWAP (the
   thesis — buyers in control — is falsified, so the trade is over even
   though neither stop nor target hit).
+- **Selection under budget:** signals fire more often than the book has
+  room for, and that's the actual hard problem — you can't buy everything
+  you want. Every trigger gets scored (`score_entry`): momentum
+  confluence carries the weight (ADX trend strength, MACD histogram,
+  relative volume, Bollinger position, RSI headroom), per-symbol news
+  sentiment shades it *asymmetrically* — bad news subtracts more than
+  good news adds, because the desk's standing belief is that news
+  misleads — and the gut's day-type hunch changes what gets penalized
+  (in suspected chop, weak trends and band-chasing cost extra). Only the
+  top-ranked candidates trade: at most `max_entries_per_cycle` (default
+  2) per poll, never more than `max_positions` (default 4, LLM-settable
+  1–6) names held. Exits are never budgeted, ranked, or deferred. Every
+  fill's rationale records the score that won it the slot.
 - **Always:** no entries after ~90% of the session (risk.py enforces),
   everything flattened by 15:45 (the runner enforces), flat overnight,
   every night. Max 40 trades/day.

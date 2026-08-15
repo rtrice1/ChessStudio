@@ -483,6 +483,8 @@ def summarize(candles: list[dict]) -> dict:
             "roc10": None,
             "bb_percent_b": None,
             "bb_bandwidth": None,
+            "bb_upper": None,
+            "bb_lower": None,
             "rel_volume": None,
         }
 
@@ -530,6 +532,8 @@ def summarize(candles: list[dict]) -> dict:
     bb_val = bollinger(closes, 20)
     bb_percent_b = bb_val["percent_b"] if bb_val else None
     bb_bandwidth = bb_val["bandwidth"] if bb_val else None
+    bb_upper = bb_val["upper"] if bb_val else None
+    bb_lower = bb_val["lower"] if bb_val else None
 
     rel_volume = relative_volume(candles, 6)
 
@@ -556,5 +560,7 @@ def summarize(candles: list[dict]) -> dict:
         "roc10": roc10_val,
         "bb_percent_b": bb_percent_b,
         "bb_bandwidth": bb_bandwidth,
+        "bb_upper": bb_upper,
+        "bb_lower": bb_lower,
         "rel_volume": rel_volume,
     }

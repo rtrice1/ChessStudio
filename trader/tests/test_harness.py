@@ -168,12 +168,17 @@ class TestHarnessPromptsAndApply(unittest.TestCase):
         result = {"symbols": ["NVDA"], "bias_off": ["TSLA"],
                   "per_trade_risk_pct": 0.5,   # model asked for 50% — clamp
                   "stop_atr": 0.01, "target_atr": 99.0,
+                  "max_positions": 40,         # model asked for 40 names — clamp
                   "rationale": "r" * 5000}
         plan = apply_day_plan(result, self.tmp.name)
         self.assertEqual(plan.per_trade_risk_pct, 0.005)
         self.assertEqual(plan.stop_atr, 0.5)
         self.assertEqual(plan.target_atr, 5.0)
+        self.assertEqual(plan.max_positions, 6)
         self.assertEqual(plan.bias, {"TSLA": "off"})
+        # A plan file written before the budget existed still loads sanely.
+        del result["max_positions"]
+        self.assertEqual(apply_day_plan(result, self.tmp.name).max_positions, 4)
         self.assertEqual(len(plan.rationale), 2000)
         self.assertTrue(os.path.exists(os.path.join(self.tmp.name, "day_plan.json")))
 

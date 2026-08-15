@@ -75,6 +75,29 @@ class TestStateAssembler(unittest.TestCase):
         open(os.path.join(self.data, "HALT"), "w").close()
         self.assertTrue(StateAssembler(self.data, self.desk).assemble()["halted"])
 
+    def test_overlay_series_and_entry_scores(self):
+        write_json(os.path.join(self.data, "latest.json"), {
+            "timestamp": "2026-08-15T14:00:00",
+            "account": {"equity": 100_000.0},
+            "quotes": {"AAPL": {"last": 101.5}},
+            "indicators": {"AAPL": {
+                "vwap": 100.5, "bb_upper": 103.0, "bb_lower": 99.0,
+                "range_high": 101.0, "range_low": 99.5,
+                "adx": 30.0, "plus_di": 25.0, "minus_di": 10.0,
+                "macd_hist": 0.4, "rel_volume": 1.6, "bb_percent_b": 0.9,
+                "rsi14": 55.0, "roc10": 1.0}},
+            "news": {"summary": {"AAPL": {"wire_sentiment": -2,
+                                          "board_sentiment": -1}}}})
+        state = StateAssembler(self.data, self.desk).assemble()
+        # Overlays tick alongside the price series, on the same clock.
+        self.assertEqual(state["overlay_series"]["AAPL"],
+                         [["14:00:00", 100.5, 103.0, 99.0]])
+        # And the live score matches the engine's ranking arithmetic.
+        aapl = state["entry_scores"]["AAPL"]
+        self.assertGreater(aapl["score"], 0)
+        self.assertIn("trending", aapl["why"])
+        self.assertIn("news -3", aapl["why"])
+
 
 class TestHttpEndpoints(unittest.TestCase):
     def test_page_state_and_sse(self):
