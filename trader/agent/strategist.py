@@ -261,7 +261,11 @@ def execute(decisions: list[Decision], snapshot: dict, ctx: SessionContext,
         if order.get("status") == "FILLED":
             fill_price = float(order.get("fillPrice") or 0.0)
             ledger.record("fill", {**entry, "notional": fill_price * d.quantity})
-            ctx.trades_today += 1
+            # The daily cap limits ENTRIES; exits must never consume it
+            # (a desk that can't sell because it bought too much today
+            # would be trapped in its own positions).
+            if d.action == "BUY":
+                ctx.trades_today += 1
             # keep the local view of the account current between decisions
             account = client.account()
         else:
