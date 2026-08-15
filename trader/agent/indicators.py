@@ -1,6 +1,7 @@
 """Technical indicators for analysis."""
 
 from typing import Any
+from math import sqrt
 
 
 def sma(closes: list[float], n: int) -> float | None:
@@ -167,6 +168,295 @@ def day_stats(candles: list[dict]) -> dict | None:
     }
 
 
+def _population_stdev(values: list[float]) -> float:
+    """Population standard deviation."""
+    if len(values) == 0:
+        return 0.0
+    mean = sum(values) / len(values)
+    variance = sum((x - mean) ** 2 for x in values) / len(values)
+    return sqrt(variance)
+
+
+def macd(closes: list[float], fast: int = 12, slow: int = 26, signal: int = 9) -> dict | None:
+    """MACD (Moving Average Convergence Divergence)."""
+    if len(closes) < slow + signal:
+        return None
+
+    # Compute EMA fast and slow series from index slow-1 onwards
+    ema_fast_series = []
+    ema_slow_series = []
+
+    # Initialize EMAs
+    ema_fast_val = sum(closes[:fast]) / fast
+    ema_slow_val = sum(closes[:slow]) / slow
+
+    multiplier_fast = 2.0 / (fast + 1)
+    multiplier_slow = 2.0 / (slow + 1)
+
+    # Compute series from index slow-1 onwards
+    for i in range(slow, len(closes)):
+        ema_fast_val = (closes[i] * multiplier_fast) + (ema_fast_val * (1 - multiplier_fast))
+        ema_slow_val = (closes[i] * multiplier_slow) + (ema_slow_val * (1 - multiplier_slow))
+        ema_fast_series.append(ema_fast_val)
+        ema_slow_series.append(ema_slow_val)
+
+    # MACD line series
+    macd_series = [f - s for f, s in zip(ema_fast_series, ema_slow_series)]
+
+    if len(macd_series) < signal:
+        return None
+
+    # Signal line is EMA of MACD series
+    signal_val = sum(macd_series[:signal]) / signal
+    multiplier_signal = 2.0 / (signal + 1)
+
+    for i in range(signal, len(macd_series)):
+        signal_val = (macd_series[i] * multiplier_signal) + (signal_val * (1 - multiplier_signal))
+
+    macd_val = macd_series[-1]
+    hist = macd_val - signal_val
+
+    return {
+        "macd": macd_val,
+        "signal": signal_val,
+        "hist": hist,
+    }
+
+
+def stochastic(candles: list[dict], k: int = 14, d: int = 3) -> dict | None:
+    """Stochastic Oscillator."""
+    if len(candles) < k + d - 1:
+        return None
+
+    # Compute %K series
+    k_series = []
+    for i in range(k - 1, len(candles)):
+        window = candles[i - k + 1 : i + 1]
+        highs = [c.get("high", 0) for c in window]
+        lows = [c.get("low", 0) for c in window]
+        close = candles[i].get("close", 0)
+
+        highest = max(highs)
+        lowest = min(lows)
+        range_val = highest - lowest
+
+        if range_val == 0:
+            k_val = 0.0
+        else:
+            k_val = 100.0 * (close - lowest) / range_val
+
+        k_series.append(k_val)
+
+    if len(k_series) < d:
+        return None
+
+    # %D is SMA of last d %K values
+    d_val = sum(k_series[-d:]) / d
+
+    return {
+        "k": k_series[-1],
+        "d": d_val,
+    }
+
+
+def adx(candles: list[dict], n: int = 14) -> dict | None:
+    """Average Directional Index (Wilder's smoothing)."""
+    if len(candles) < 2 * n + 1:
+        return None
+
+    # Compute +DM, -DM, TR for each bar
+    plus_dm_series = []
+    minus_dm_series = []
+    tr_series = []
+
+    for i, candle in enumerate(candles):
+        high = candle.get("high", 0)
+        low = candle.get("low", 0)
+
+        if i == 0:
+            tr = high - low
+            plus_dm = 0.0
+            minus_dm = 0.0
+        else:
+            prev_close = candles[i - 1].get("close", 0)
+            tr = max(high - low, abs(high - prev_close), abs(low - prev_close))
+
+            high_diff = high - candles[i - 1].get("high", 0)
+            low_diff = candles[i - 1].get("low", 0) - low
+
+            plus_dm = 0.0
+            minus_dm = 0.0
+
+            if high_diff > low_diff and high_diff > 0:
+                plus_dm = high_diff
+            if low_diff > high_diff and low_diff > 0:
+                minus_dm = low_diff
+
+        plus_dm_series.append(plus_dm)
+        minus_dm_series.append(minus_dm)
+        tr_series.append(tr)
+
+    # Wilder's smoothing: first value is sum of n periods, then smoothed
+    plus_dm_smoothed = sum(plus_dm_series[1 : n + 1])
+    minus_dm_smoothed = sum(minus_dm_series[1 : n + 1])
+    tr_smoothed = sum(tr_series[:n])
+
+    # Continue smoothing for the rest of the series
+    for i in range(n + 1, len(candles)):
+        plus_dm_smoothed = plus_dm_smoothed - (plus_dm_smoothed / n) + plus_dm_series[i]
+        minus_dm_smoothed = minus_dm_smoothed - (minus_dm_smoothed / n) + minus_dm_series[i]
+        tr_smoothed = tr_smoothed - (tr_smoothed / n) + tr_series[i]
+
+    # Calculate DI+ and DI-
+    if tr_smoothed == 0:
+        plus_di = 0.0
+        minus_di = 0.0
+    else:
+        plus_di = 100.0 * plus_dm_smoothed / tr_smoothed
+        minus_di = 100.0 * minus_dm_smoothed / tr_smoothed
+
+    # Calculate DX and ADX
+    di_sum = plus_di + minus_di
+    if di_sum == 0:
+        dx = 0.0
+    else:
+        dx = 100.0 * abs(plus_di - minus_di) / di_sum
+
+    # ADX is Wilder's average of DX over n periods
+    # Compute DX series from bar n onwards
+    dx_series = []
+    plus_dm_smoothed = sum(plus_dm_series[1 : n + 1])
+    minus_dm_smoothed = sum(minus_dm_series[1 : n + 1])
+    tr_smoothed = sum(tr_series[:n])
+
+    for i in range(n, len(candles)):
+        if i > n:
+            plus_dm_smoothed = plus_dm_smoothed - (plus_dm_smoothed / n) + plus_dm_series[i]
+            minus_dm_smoothed = minus_dm_smoothed - (minus_dm_smoothed / n) + minus_dm_series[i]
+            tr_smoothed = tr_smoothed - (tr_smoothed / n) + tr_series[i]
+
+        if tr_smoothed == 0:
+            plus_di_i = 0.0
+            minus_di_i = 0.0
+        else:
+            plus_di_i = 100.0 * plus_dm_smoothed / tr_smoothed
+            minus_di_i = 100.0 * minus_dm_smoothed / tr_smoothed
+
+        di_sum_i = plus_di_i + minus_di_i
+        if di_sum_i == 0:
+            dx_i = 0.0
+        else:
+            dx_i = 100.0 * abs(plus_di_i - minus_di_i) / di_sum_i
+
+        dx_series.append(dx_i)
+
+    if len(dx_series) < n:
+        return None
+
+    # Wilder's smoothed ADX
+    adx_val = sum(dx_series[:n]) / n
+    for i in range(n, len(dx_series)):
+        adx_val = (adx_val * (n - 1) + dx_series[i]) / n
+
+    return {
+        "adx": adx_val,
+        "plus_di": plus_di,
+        "minus_di": minus_di,
+    }
+
+
+def roc(closes: list[float], n: int = 10) -> float | None:
+    """Rate of Change: 100 * (close / close[n periods ago] - 1)."""
+    if len(closes) < n + 1:
+        return None
+
+    prev_close = closes[-(n + 1)]
+    if prev_close == 0:
+        return None
+
+    return 100.0 * (closes[-1] / prev_close - 1.0)
+
+
+def bollinger(closes: list[float], n: int = 20, k: float = 2.0) -> dict | None:
+    """Bollinger Bands."""
+    if len(closes) < n:
+        return None
+
+    mid = sma(closes, n)
+    if mid is None:
+        return None
+
+    last_n = closes[-n:]
+    sd = _population_stdev(last_n)
+
+    upper = mid + k * sd
+    lower = mid - k * sd
+
+    # Bandwidth: (upper - lower) / mid
+    if mid == 0:
+        bandwidth = 0.0
+    else:
+        bandwidth = (upper - lower) / mid
+
+    # Percent B: (close - lower) / (upper - lower)
+    range_val = upper - lower
+    if range_val == 0:
+        percent_b = 0.5
+    else:
+        percent_b = (closes[-1] - lower) / range_val
+
+    return {
+        "upper": upper,
+        "lower": lower,
+        "mid": mid,
+        "bandwidth": bandwidth,
+        "percent_b": percent_b,
+    }
+
+
+def obv(candles: list[dict]) -> float | None:
+    """On-Balance Volume."""
+    if len(candles) < 2:
+        return None
+
+    obv_val = 0.0
+
+    for i in range(len(candles)):
+        volume = candles[i].get("volume", 0)
+        close = candles[i].get("close", 0)
+
+        if i == 0:
+            obv_val = volume
+        else:
+            prev_close = candles[i - 1].get("close", 0)
+            if close > prev_close:
+                obv_val += volume
+            elif close < prev_close:
+                obv_val -= volume
+
+    return obv_val
+
+
+def relative_volume(candles: list[dict], bars: int = 6) -> float | None:
+    """Relative Volume: mean volume of last N bars / mean volume of all earlier candles."""
+    if len(candles) <= bars:
+        return None
+
+    recent_volumes = [c.get("volume", 0) for c in candles[-bars:]]
+    earlier_volumes = [c.get("volume", 0) for c in candles[:-bars]]
+
+    if not earlier_volumes:
+        return None
+
+    recent_mean = sum(recent_volumes) / len(recent_volumes) if recent_volumes else 0
+    earlier_mean = sum(earlier_volumes) / len(earlier_volumes) if earlier_volumes else 0
+
+    if earlier_mean == 0:
+        return None
+
+    return recent_mean / earlier_mean
+
+
 def summarize(candles: list[dict]) -> dict:
     """Compute technical summary from candles."""
     if not candles:
@@ -184,6 +474,16 @@ def summarize(candles: list[dict]) -> dict:
             "day_low": None,
             "range_high": None,
             "range_low": None,
+            "macd_hist": None,
+            "stoch_k": None,
+            "stoch_d": None,
+            "adx": None,
+            "plus_di": None,
+            "minus_di": None,
+            "roc10": None,
+            "bb_percent_b": None,
+            "bb_bandwidth": None,
+            "rel_volume": None,
         }
 
     closes = [c.get("close", 0) for c in candles]
@@ -212,6 +512,27 @@ def summarize(candles: list[dict]) -> dict:
     range_high_val = opening_range_val["high"] if opening_range_val else None
     range_low_val = opening_range_val["low"] if opening_range_val else None
 
+    # Momentum indicators
+    macd_val = macd(closes)
+    macd_hist = macd_val["hist"] if macd_val else None
+
+    stoch_val = stochastic(candles)
+    stoch_k = stoch_val["k"] if stoch_val else None
+    stoch_d = stoch_val["d"] if stoch_val else None
+
+    adx_val = adx(candles)
+    adx_result = adx_val["adx"] if adx_val else None
+    plus_di = adx_val["plus_di"] if adx_val else None
+    minus_di = adx_val["minus_di"] if adx_val else None
+
+    roc10_val = roc(closes, 10)
+
+    bb_val = bollinger(closes, 20)
+    bb_percent_b = bb_val["percent_b"] if bb_val else None
+    bb_bandwidth = bb_val["bandwidth"] if bb_val else None
+
+    rel_volume = relative_volume(candles, 6)
+
     return {
         "last_close": last_close,
         "sma20": sma20_val,
@@ -226,4 +547,14 @@ def summarize(candles: list[dict]) -> dict:
         "day_low": day_low_val,
         "range_high": range_high_val,
         "range_low": range_low_val,
+        "macd_hist": macd_hist,
+        "stoch_k": stoch_k,
+        "stoch_d": stoch_d,
+        "adx": adx_result,
+        "plus_di": plus_di,
+        "minus_di": minus_di,
+        "roc10": roc10_val,
+        "bb_percent_b": bb_percent_b,
+        "bb_bandwidth": bb_bandwidth,
+        "rel_volume": rel_volume,
     }

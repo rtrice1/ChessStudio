@@ -9,7 +9,25 @@ from unittest.mock import MagicMock, patch
 from urllib.error import HTTPError
 
 from agent.client import BrokerClient, BrokerError
-from agent.indicators import atr, day_stats, ema, latest_day, opening_range, pct_change, rsi, sma, summarize, vwap
+from agent.indicators import (
+    adx,
+    atr,
+    bollinger,
+    day_stats,
+    ema,
+    latest_day,
+    macd,
+    obv,
+    opening_range,
+    pct_change,
+    relative_volume,
+    roc,
+    rsi,
+    sma,
+    stochastic,
+    summarize,
+    vwap,
+)
 from agent.ledger import Ledger
 from agent.poller import compute_alerts, sentiment_score, summarize_news
 
@@ -365,6 +383,354 @@ class TestIntradayIndicators(unittest.TestCase):
         self.assertIn("atr14", result)
         self.assertIn("pct_change_1d", result)
         self.assertIn("pct_change_5d", result)
+
+
+class TestMomentumIndicators(unittest.TestCase):
+    """Test momentum indicators: MACD, Stochastic, ADX, ROC, Bollinger, OBV, Relative Volume."""
+
+    def test_macd_not_enough_data(self):
+        """Test MACD with insufficient data."""
+        closes = [100.0, 101.0, 102.0]
+        result = macd(closes)
+        self.assertIsNone(result)
+
+    def test_macd_accelerating_uptrend(self):
+        """Test MACD histogram sign flips positive in accelerating uptrend."""
+        # Slow rise then steep rise (need at least 35 closes for slow=26, signal=9)
+        closes = [float(100 + i) for i in range(26)]  # 26 closes: slow rise
+        closes.extend([float(126 + i * 5) for i in range(15)])  # steep rise
+
+        result = macd(closes)
+        self.assertIsNotNone(result)
+        self.assertIn("macd", result)
+        self.assertIn("signal", result)
+        self.assertIn("hist", result)
+        # In strong uptrend, hist should be positive
+        self.assertGreater(result["hist"], 0)
+
+    def test_macd_downtrend(self):
+        """Test MACD in a downtrend."""
+        closes = [float(200 - i) for i in range(26)]  # downtrend for 26 closes
+        closes.extend([float(174 - i * 5) for i in range(15)])  # steep downtrend
+
+        result = macd(closes)
+        self.assertIsNotNone(result)
+        # In strong downtrend, hist should be negative
+        self.assertLess(result["hist"], 0)
+
+    def test_stochastic_not_enough_data(self):
+        """Test Stochastic with insufficient data."""
+        candles = [{"high": 100.0, "low": 99.0, "close": 99.5}]
+        result = stochastic(candles, k=14, d=3)
+        self.assertIsNone(result)
+
+    def test_stochastic_at_new_high(self):
+        """Test Stochastic %K = 100 at new high."""
+        candles = []
+        for i in range(15):
+            candles.append({
+                "high": float(100 + i),
+                "low": float(99 + i),
+                "close": float(99.5 + i),
+            })
+        # Last candle at a new high relative to range
+        candles.append({"high": 115.0, "low": 100.0, "close": 115.0})
+
+        result = stochastic(candles, k=14, d=3)
+        self.assertIsNotNone(result)
+        self.assertAlmostEqual(result["k"], 100.0)
+
+    def test_stochastic_at_new_low(self):
+        """Test Stochastic %K = 0 at new low."""
+        candles = []
+        for i in range(15):
+            candles.append({
+                "high": float(100 + i),
+                "low": float(99 + i),
+                "close": float(100 + i),
+            })
+        # Last candle at bottom of range
+        candles.append({"high": 113.0, "low": 85.0, "close": 85.0})
+
+        result = stochastic(candles, k=14, d=3)
+        self.assertIsNotNone(result)
+        self.assertAlmostEqual(result["k"], 0.0)
+
+    def test_stochastic_bounds(self):
+        """Test Stochastic %K and %D are bounded [0, 100]."""
+        candles = [
+            {"high": 100.0 + i, "low": 99.0 + i, "close": 99.5 + i}
+            for i in range(20)
+        ]
+        result = stochastic(candles, k=14, d=3)
+        self.assertIsNotNone(result)
+        self.assertGreaterEqual(result["k"], 0.0)
+        self.assertLessEqual(result["k"], 100.0)
+        self.assertGreaterEqual(result["d"], 0.0)
+        self.assertLessEqual(result["d"], 100.0)
+
+    def test_adx_not_enough_data(self):
+        """Test ADX with insufficient data."""
+        candles = [{"high": 100.0, "low": 99.0, "close": 99.5}]
+        result = adx(candles, n=14)
+        self.assertIsNone(result)
+
+    def test_adx_trending_vs_choppy(self):
+        """Test ADX rises in persistent trend vs flat/oscillating series."""
+        # Trending series: consistent uptrend
+        trending = []
+        for i in range(50):
+            trending.append({
+                "high": 100.0 + i * 2,
+                "low": 99.0 + i * 2,
+                "close": 99.5 + i * 2,
+            })
+
+        # Choppy series: oscillating
+        choppy = []
+        for i in range(50):
+            if i % 2 == 0:
+                choppy.append({"high": 105.0, "low": 100.0, "close": 105.0})
+            else:
+                choppy.append({"high": 110.0, "low": 105.0, "close": 105.0})
+
+        trending_adx = adx(trending, n=14)
+        choppy_adx = adx(choppy, n=14)
+
+        self.assertIsNotNone(trending_adx)
+        self.assertIsNotNone(choppy_adx)
+        self.assertGreater(trending_adx["adx"], choppy_adx["adx"])
+        self.assertGreaterEqual(trending_adx["adx"], 0)
+        self.assertLessEqual(trending_adx["adx"], 100)
+        self.assertGreaterEqual(choppy_adx["adx"], 0)
+        self.assertLessEqual(choppy_adx["adx"], 100)
+
+    def test_adx_di_uptrend(self):
+        """Test +DI > -DI in uptrend."""
+        candles = []
+        for i in range(50):
+            candles.append({
+                "high": 100.0 + i * 2,
+                "low": 99.0 + i * 2,
+                "close": 99.5 + i * 2,
+            })
+
+        result = adx(candles, n=14)
+        self.assertIsNotNone(result)
+        self.assertGreater(result["plus_di"], result["minus_di"])
+
+    def test_adx_di_downtrend(self):
+        """Test -DI > +DI in downtrend."""
+        candles = []
+        for i in range(50):
+            candles.append({
+                "high": 200.0 - i * 2,
+                "low": 199.0 - i * 2,
+                "close": 199.5 - i * 2,
+            })
+
+        result = adx(candles, n=14)
+        self.assertIsNotNone(result)
+        self.assertGreater(result["minus_di"], result["plus_di"])
+
+    def test_roc_not_enough_data(self):
+        """Test ROC with insufficient data."""
+        closes = [100.0, 101.0]
+        result = roc(closes, n=10)
+        self.assertIsNone(result)
+
+    def test_roc_exact(self):
+        """Test ROC exact calculation on known series."""
+        closes = [100.0] * 10 + [110.0]  # 10% increase from 100 to 110
+        result = roc(closes, n=10)
+        self.assertIsNotNone(result)
+        self.assertAlmostEqual(result, 10.0)  # 100 * (110/100 - 1) = 10
+
+    def test_roc_decrease(self):
+        """Test ROC with price decrease."""
+        closes = [100.0] * 10 + [90.0]  # 10% decrease
+        result = roc(closes, n=10)
+        self.assertIsNotNone(result)
+        self.assertAlmostEqual(result, -10.0)  # 100 * (90/100 - 1) = -10
+
+    def test_bollinger_not_enough_data(self):
+        """Test Bollinger with insufficient data."""
+        closes = [100.0, 101.0]
+        result = bollinger(closes, n=20)
+        self.assertIsNone(result)
+
+    def test_bollinger_exact_constant(self):
+        """Test Bollinger on constant series: mid = close, upper/lower = mid +/- 0."""
+        closes = [100.0] * 20
+        result = bollinger(closes, n=20, k=2.0)
+        self.assertIsNotNone(result)
+        self.assertAlmostEqual(result["mid"], 100.0)
+        self.assertAlmostEqual(result["upper"], 100.0)
+        self.assertAlmostEqual(result["lower"], 100.0)
+        self.assertAlmostEqual(result["bandwidth"], 0.0)
+
+    def test_bollinger_exact_step(self):
+        """Test Bollinger on constant-then-step series."""
+        closes = [100.0] * 20 + [105.0]  # constant then step up
+        result = bollinger(closes, n=20, k=2.0)
+        self.assertIsNotNone(result)
+        # Last 20: 19x100 + 1x105
+        mid_expected = (19 * 100 + 105) / 20  # 100.25
+        self.assertAlmostEqual(result["mid"], mid_expected, places=5)
+        self.assertGreater(result["upper"], result["mid"])
+        self.assertLess(result["lower"], result["mid"])
+
+    def test_bollinger_percent_b_middle(self):
+        """Test Bollinger %B at middle of band."""
+        closes = [100.0] * 20 + [100.0]  # all same
+        result = bollinger(closes, n=20, k=2.0)
+        self.assertIsNotNone(result)
+        # At middle of band
+        self.assertAlmostEqual(result["percent_b"], 0.5)
+
+    def test_bollinger_percent_b_at_upper(self):
+        """Test Bollinger %B at upper band."""
+        closes = [100.0] * 20
+        result = bollinger(closes, n=20, k=2.0)
+        self.assertIsNotNone(result)
+        # At flat band, percent_b should be 0.5 (close is at both upper and lower)
+        self.assertAlmostEqual(result["percent_b"], 0.5)
+
+    def test_obv_not_enough_data(self):
+        """Test OBV with insufficient data."""
+        candles = [{"close": 100.0, "volume": 1000}]
+        result = obv(candles)
+        self.assertIsNone(result)
+
+    def test_obv_exact_4_candle(self):
+        """Test OBV exact on tiny 4-candle case."""
+        candles = [
+            {"close": 100.0, "volume": 100},  # initial
+            {"close": 101.0, "volume": 200},  # up: +200
+            {"close": 100.0, "volume": 150},  # down: -150
+            {"close": 102.0, "volume": 300},  # up: +300
+        ]
+        result = obv(candles)
+        self.assertIsNotNone(result)
+        # OBV = 100 + 200 - 150 + 300 = 450
+        self.assertAlmostEqual(result, 450.0)
+
+    def test_obv_uptrend(self):
+        """Test OBV in uptrend."""
+        candles = [
+            {"close": float(100 + i), "volume": 1000}
+            for i in range(10)
+        ]
+        result = obv(candles)
+        self.assertIsNotNone(result)
+        # All closes are increasing, so volume accumulates
+        self.assertGreater(result, 0)
+
+    def test_relative_volume_not_enough_data(self):
+        """Test Relative Volume with insufficient data."""
+        candles = [{"volume": 1000}, {"volume": 2000}]
+        result = relative_volume(candles, bars=6)
+        self.assertIsNone(result)
+
+    def test_relative_volume_doubled(self):
+        """Test Relative Volume > 1 when recent volume doubled."""
+        # 10 earlier candles with volume 100
+        candles = [{"volume": 100} for _ in range(10)]
+        # 6 recent candles with volume 200 (doubled)
+        candles.extend([{"volume": 200} for _ in range(6)])
+
+        result = relative_volume(candles, bars=6)
+        self.assertIsNotNone(result)
+        self.assertAlmostEqual(result, 2.0)
+
+    def test_relative_volume_halved(self):
+        """Test Relative Volume < 1 when recent volume halved."""
+        candles = [{"volume": 100} for _ in range(10)]
+        candles.extend([{"volume": 50} for _ in range(6)])
+
+        result = relative_volume(candles, bars=6)
+        self.assertIsNotNone(result)
+        self.assertAlmostEqual(result, 0.5)
+
+    def test_relative_volume_zero_earlier_mean(self):
+        """Test Relative Volume returns None when earlier mean is 0."""
+        candles = [{"volume": 0} for _ in range(10)]
+        candles.extend([{"volume": 100} for _ in range(6)])
+
+        result = relative_volume(candles, bars=6)
+        self.assertIsNone(result)
+
+    def test_summarize_momentum_keys_present(self):
+        """Test summarize includes all momentum keys."""
+        candles = [
+            {"datetime": "2024-01-15T09:30:00Z", "open": 100.0 + i, "high": 101.0 + i, "low": 99.0 + i, "close": 100.0 + i, "volume": 1000}
+            for i in range(50)
+        ]
+        result = summarize(candles)
+        self.assertIn("macd_hist", result)
+        self.assertIn("stoch_k", result)
+        self.assertIn("stoch_d", result)
+        self.assertIn("adx", result)
+        self.assertIn("plus_di", result)
+        self.assertIn("minus_di", result)
+        self.assertIn("roc10", result)
+        self.assertIn("bb_percent_b", result)
+        self.assertIn("bb_bandwidth", result)
+        self.assertIn("rel_volume", result)
+
+    def test_summarize_momentum_keys_empty(self):
+        """Test summarize with empty list has all momentum keys."""
+        result = summarize([])
+        self.assertIsNone(result["macd_hist"])
+        self.assertIsNone(result["stoch_k"])
+        self.assertIsNone(result["stoch_d"])
+        self.assertIsNone(result["adx"])
+        self.assertIsNone(result["plus_di"])
+        self.assertIsNone(result["minus_di"])
+        self.assertIsNone(result["roc10"])
+        self.assertIsNone(result["bb_percent_b"])
+        self.assertIsNone(result["bb_bandwidth"])
+        self.assertIsNone(result["rel_volume"])
+
+    def test_summarize_momentum_keys_short_list(self):
+        """Test summarize tolerates short candle list."""
+        candles = [
+            {"datetime": "2024-01-15T09:30:00Z", "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0, "volume": 1000}
+        ]
+        result = summarize(candles)
+        # Should have all keys even if values are None
+        self.assertIn("macd_hist", result)
+        self.assertIn("stoch_k", result)
+        self.assertIn("stoch_d", result)
+        self.assertIn("adx", result)
+        self.assertIn("plus_di", result)
+        self.assertIn("minus_di", result)
+        self.assertIn("roc10", result)
+        self.assertIn("bb_percent_b", result)
+        self.assertIn("bb_bandwidth", result)
+        self.assertIn("rel_volume", result)
+
+    def test_summarize_preserves_existing_keys(self):
+        """Test summarize keeps all existing keys."""
+        candles = [
+            {"datetime": "2024-01-15T09:30:00Z", "open": float(100 + i), "high": float(101 + i), "low": float(99 + i), "close": float(100 + i), "volume": 1000}
+            for i in range(50)
+        ]
+        result = summarize(candles)
+        # Existing keys should all be present
+        self.assertIn("last_close", result)
+        self.assertIn("sma20", result)
+        self.assertIn("ema9", result)
+        self.assertIn("rsi14", result)
+        self.assertIn("atr14", result)
+        self.assertIn("pct_change_1d", result)
+        self.assertIn("pct_change_5d", result)
+        self.assertIn("vwap", result)
+        self.assertIn("day_open", result)
+        self.assertIn("day_high", result)
+        self.assertIn("day_low", result)
+        self.assertIn("range_high", result)
+        self.assertIn("range_low", result)
 
 
 class TestLedger(unittest.TestCase):
