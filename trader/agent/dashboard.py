@@ -55,6 +55,7 @@ class StateAssembler:
     def __init__(self, data_dir: str, desk_dir: str):
         self.data_dir, self.desk_dir = data_dir, desk_dir
         self.equity_series: list[list] = []   # [iso_ts, equity]
+        self.price_series: dict[str, list] = {}   # symbol -> [[hh:mm:ss, last]]
         self._score_cache: dict | None = None
         self._score_at = 0.0
 
@@ -62,11 +63,18 @@ class StateAssembler:
         latest = _read_json(os.path.join(self.data_dir, "latest.json")) or {}
         account = latest.get("account") or {}
         equity = account.get("equity")
+        quotes = latest.get("quotes") or {}
+        ts = latest.get("timestamp") or ""
         if equity is not None:
-            ts = latest.get("timestamp") or ""
             if not self.equity_series or self.equity_series[-1][0] != ts:
                 self.equity_series.append([ts, float(equity)])
                 self.equity_series = self.equity_series[-500:]
+                clock = ts[11:19] if len(ts) >= 19 else ts
+                for sym, q in quotes.items():
+                    if q.get("last") is not None:
+                        series = self.price_series.setdefault(sym, [])
+                        series.append([clock, float(q["last"])])
+                        del series[:-240]
 
         ledger = _read_jsonl_tail(os.path.join(self.data_dir, "ledger.jsonl"), 400)
         events = [e for e in ledger if e.get("kind") in EVENT_KINDS][-25:]
@@ -78,8 +86,11 @@ class StateAssembler:
                 self._score_cache = None
             self._score_at = time.time()
 
-        journal = _read_jsonl_tail(os.path.join(self.desk_dir, "journal.jsonl"), 5)
+        journal = _read_jsonl_tail(os.path.join(self.desk_dir, "journal.jsonl"), 40)
         beliefs = _read_json(os.path.join(self.desk_dir, "beliefs.json")) or {}
+        gut_checks = [e for e in ledger if e.get("kind") == "gut_check"]
+        fills_today = [e for e in ledger if e.get("kind") == "fill"
+                       and e.get("ts", "")[:10] == ts[:10]]
         return {
             "ts": time.time(),
             "account": account,
@@ -87,10 +98,20 @@ class StateAssembler:
             "positions": [p for p in account.get("positions", [])
                           if p.get("quantity")],
             "equity_series": self.equity_series,
+            "price_series": self.price_series,
+            "quotes": quotes,
+            "indicators": latest.get("indicators") or {},
+            "news_summary": ((latest.get("news") or {}).get("summary") or {}),
             "events": list(reversed(events)),
             "plan": _read_json(os.path.join(self.data_dir, "day_plan.json")),
             "halted": os.path.exists(os.path.join(self.data_dir, "HALT")),
-            "journal": list(reversed(journal)),
+            "journal": list(reversed(journal[-5:])),
+            "daily_pnl": [{"date": d.get("ts", "")[:10],
+                           "pnl_pct": d.get("pnl_pct")}
+                          for d in journal if d.get("kind") == "trading_day"
+                          and d.get("pnl_pct") is not None][-20:],
+            "hunch": (gut_checks[-1].get("hunch") if gut_checks else None),
+            "trades_today": len(fills_today),
             "beliefs": {k: v.get("value") if isinstance(v, dict) else v
                         for k, v in beliefs.items()},
             "scoreboard": self._score_cache,
@@ -126,12 +147,29 @@ td.num{text-align:right}
 svg text{fill:var(--ink2);font:10px ui-monospace,monospace}
 .halt{background:var(--bad);color:#fff;padding:6px 10px;border-radius:6px;display:none;margin-bottom:10px}
 small{color:var(--muted)}
+.wide{grid-column:1/-1}
+.minis{display:grid;gap:8px;grid-template-columns:repeat(auto-fill,minmax(150px,1fr))}
+.mini{background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:6px}
+.mini .h{display:flex;justify-content:space-between;font-size:11px;color:var(--ink2)}
+.meter{margin:7px 0}.meter .lbl{display:flex;justify-content:space-between;font-size:11px;color:var(--ink2)}
+.meter .track{height:6px;background:var(--bg);border:1px solid var(--line);border-radius:3px;margin-top:3px}
+.meter .fill{height:100%;border-radius:3px;background:var(--accent)}
+.meter .fill.hot{background:var(--bad)}
+.badge{display:inline-block;padding:0 5px;border:1px solid var(--line);border-radius:4px;font-size:10px;color:var(--ink2);margin-left:3px}
+#tip{position:fixed;display:none;background:#000c;border:1px solid var(--line);border-radius:5px;padding:4px 8px;font-size:11px;color:var(--ink);pointer-events:none;z-index:9}
+.chip{display:inline-block;background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:4px 9px;font-size:12px;color:var(--ink2);margin-right:6px}
 </style></head><body>
 <h1>THE DESK <span class="dot" id="dot">●</span> <small id="mode"></small></h1>
+<div id="tip"></div>
 <div class="halt" id="halt">⛔ HALT file present — all trading stopped</div>
 <div class="tiles" id="tiles"></div>
+<div style="margin-bottom:10px" id="chips"></div>
 <div class="grid">
-  <div class="panel"><h2>Equity (intraday)</h2><svg id="spark" width="100%" height="120" viewBox="0 0 600 120" preserveAspectRatio="none"></svg></div>
+  <div class="panel"><h2>Equity (intraday)</h2><svg id="spark" width="100%" height="130" viewBox="0 0 600 130"></svg></div>
+  <div class="panel"><h2>Risk limits — headroom</h2><div id="meters"></div></div>
+  <div class="panel wide"><h2>Signal board</h2><table id="signals"></table></div>
+  <div class="panel wide"><h2>Watchlist (intraday last)</h2><div class="minis" id="minis"></div></div>
+  <div class="panel"><h2>Daily P&amp;L (%)</h2><svg id="dailypnl" width="100%" height="120" viewBox="0 0 600 120"></svg></div>
   <div class="panel"><h2>Positions</h2><table id="positions"></table></div>
   <div class="panel"><h2>Live feed</h2><div class="feed" id="feed"></div></div>
   <div class="panel"><h2>Day plan</h2><div id="plan" style="color:var(--ink2);font-size:13px">—</div></div>
@@ -157,14 +195,119 @@ function tiles(s){
     ["JUDGMENT $",fmt(jc.est_cost_usd,4)],
   ].map(([k,v])=>`<div class="tile"><div class="k">${k}</div><div class="v">${v}</div></div>`).join("");
 }
+function linePath(series,W,H,top,bot){
+  const ys=series.map(p=>p[1]),min=Math.min(...ys),max=Math.max(...ys),pad=(max-min)||1;
+  const X=i=>i/(series.length-1)*(W-8)+4,Y=v=>(H-bot)-((v-min)/pad)*(H-bot-top);
+  return {min,max,X,Y,
+    d:series.map((p,i)=>`${i?"L":"M"}${X(i).toFixed(1)},${Y(p[1]).toFixed(1)}`).join("")};
+}
+function hover(svg,series,geo){
+  const tip=$("tip");
+  svg.onmousemove=e=>{
+    const r=svg.getBoundingClientRect();
+    const frac=(e.clientX-r.left)/r.width;
+    const i=Math.min(series.length-1,Math.max(0,Math.round(frac*(series.length-1))));
+    const [t,v]=series[i];
+    tip.style.display="block";tip.style.left=(e.clientX+12)+"px";tip.style.top=(e.clientY-10)+"px";
+    tip.textContent=`${t}  ${fmt(v)}`;
+    const x=geo.X(i).toFixed(1);
+    let ch=svg.querySelector(".xh");
+    if(!ch){ch=document.createElementNS("http://www.w3.org/2000/svg","line");
+      ch.setAttribute("class","xh");ch.setAttribute("stroke","#656d76");
+      ch.setAttribute("stroke-dasharray","3,3");svg.appendChild(ch);}
+    ch.setAttribute("x1",x);ch.setAttribute("x2",x);
+    ch.setAttribute("y1","6");ch.setAttribute("y2",svg.viewBox.baseVal.height-14);};
+  svg.onmouseleave=()=>{tip.style.display="none";
+    const ch=svg.querySelector(".xh");if(ch)ch.remove();};
+}
 function spark(series){
   const svg=$("spark");if(!series||series.length<2){svg.innerHTML="";return}
-  const ys=series.map(p=>p[1]),min=Math.min(...ys),max=Math.max(...ys),pad=(max-min)||1;
-  const X=i=>i/(series.length-1)*592+4,Y=v=>110-((v-min)/pad)*96;
-  const path=series.map((p,i)=>`${i?"L":"M"}${X(i).toFixed(1)},${Y(p[1]).toFixed(1)}`).join("");
-  svg.innerHTML=`<line x1="4" y1="110" x2="596" y2="110" stroke="#21262d"/>`+
-    `<path d="${path}" fill="none" stroke="#58a6ff" stroke-width="2" stroke-linejoin="round"/>`+
-    `<text x="4" y="10">${fmt(max)}</text><text x="4" y="108" dy="-2">${fmt(min)}</text>`;
+  const g=linePath(series,600,130,12,16);
+  svg.innerHTML=`<line x1="4" y1="114" x2="596" y2="114" stroke="#21262d"/>`+
+    `<path d="${g.d}" fill="none" stroke="#58a6ff" stroke-width="2" stroke-linejoin="round"/>`+
+    `<text x="4" y="10">${fmt(g.max)}</text><text x="4" y="128">${fmt(g.min)}</text>`;
+  hover(svg,series,g);
+}
+function minis(s){
+  const box=$("minis"),ps=s.price_series||{};
+  box.innerHTML=Object.keys(ps).sort().map(sym=>{
+    const series=ps[sym];if(!series||series.length<2)return "";
+    const ind=(s.indicators||{})[sym]||{};
+    const last=series[series.length-1][1],open=ind.day_open||series[0][1];
+    const chg=open?(last-open)/open*100:0;
+    const g=linePath(series,150,44,4,4);
+    return `<div class="mini"><div class="h"><b style="color:var(--ink)">${sym}</b>`+
+      `<span class="${cls(chg)}">${sign(chg)}${chg.toFixed(2)}%</span></div>`+
+      `<svg width="100%" height="44" viewBox="0 0 150 44" preserveAspectRatio="none">`+
+      `<path d="${g.d}" fill="none" stroke="#58a6ff" stroke-width="1.5"/></svg></div>`;
+  }).join("");
+}
+function bullet(v,lo,hi,ticks){
+  if(v==null)return "—";
+  const W=90,x=t=>4+(Math.min(hi,Math.max(lo,t))-lo)/(hi-lo)*(W-8);
+  return `<svg width="${W}" height="14" viewBox="0 0 ${W} 14">`+
+    `<line x1="4" y1="7" x2="${W-4}" y2="7" stroke="#21262d" stroke-width="4" stroke-linecap="round"/>`+
+    ticks.map(t=>`<line x1="${x(t)}" y1="2" x2="${x(t)}" y2="12" stroke="#656d76"/>`).join("")+
+    `<circle cx="${x(v)}" cy="7" r="4" fill="#58a6ff"/></svg>`;
+}
+function signals(s){
+  const ind=s.indicators||{},q=s.quotes||{},news=s.news_summary||{};
+  const alertsBy={};(s.alerts||[]).forEach(a=>{(alertsBy[a.symbol]=alertsBy[a.symbol]||[]).push(a.kind)});
+  const rows=Object.keys(ind).sort().map(sym=>{
+    const i=ind[sym],quote=q[sym]||{},last=quote.last;
+    const chg=i.day_open&&last?(last-i.day_open)/i.day_open*100:null;
+    const vsV=(i.vwap&&last)?(last>=i.vwap?'<span class="pos">above</span>':'<span class="neg">below</span>'):"—";
+    const rangePos=(i.range_low!=null&&i.range_high!=null&&last!=null)
+      ?bullet(last,i.range_low,i.range_high,[]):"—";
+    const n=news[sym]||{};
+    const senti=(n.wire_sentiment!=null)?`${sign(n.wire_sentiment)}${n.wire_sentiment}/${sign(n.board_sentiment)}${n.board_sentiment}`:"—";
+    const badges=(alertsBy[sym]||[]).map(k=>`<span class="badge">${k}</span>`).join("");
+    return `<tr><td style="color:var(--ink)">${sym}</td><td class="num">${fmt(last)}</td>`+
+      `<td class="num ${cls(chg)}">${chg==null?"—":sign(chg)+chg.toFixed(2)+"%"}</td>`+
+      `<td>${bullet(i.rsi14,0,100,[30,70])}</td><td>${vsV}</td><td>${rangePos}</td>`+
+      `<td class="num">${senti}</td><td>${badges}</td></tr>`;
+  }).join("");
+  $("signals").innerHTML=`<tr><th>sym</th><th>last</th><th>day</th><th>rsi (30/70)</th>`+
+    `<th>vwap</th><th>range pos</th><th>wire/board</th><th>alerts</th></tr>${rows}`;
+}
+function meters(s){
+  const eq=(s.account||{}).equity||0,series=s.equity_series||[];
+  const open=series.length?series[0][1]:eq;
+  const dd=open?Math.max(0,(open-eq)/open):0;
+  const optPrem=(s.positions||[]).filter(p=>/^[A-Z]{1,6}\\d{6}[CP]\\d{8}$/.test(p.symbol))
+    .reduce((a,p)=>a+(p.marketValue||0),0);
+  const gross=(s.positions||[]).reduce((a,p)=>a+(p.marketValue||0),0);
+  const rows=[["trades today",s.trades_today||0,40,""],
+    ["drawdown",(dd*100).toFixed(2)+"%",2,dd*100/2],
+    ["gross exposure",eq?(gross/eq*100).toFixed(0)+"%":"0%",100,eq?gross/eq:0],
+    ["option premium",eq?(optPrem/eq*100).toFixed(1)+"%":"0%",6,eq?optPrem/eq*100/6:0]];
+  $("meters").innerHTML=rows.map(([k,v,cap,frac])=>{
+    const f=typeof frac==="number"?Math.min(1,frac):Math.min(1,(v||0)/cap);
+    return `<div class="meter"><div class="lbl"><span>${k}</span><span>${v} / cap ${cap}${typeof v==="string"&&v.includes("%")?"%":""}</span></div>`+
+      `<div class="track"><div class="fill${f>0.8?" hot":""}" style="width:${(f*100).toFixed(0)}%"></div></div></div>`;
+  }).join("");
+}
+function dailyPnl(s){
+  const svg=$("dailypnl"),days=s.daily_pnl||[];
+  if(!days.length){svg.innerHTML="";return}
+  const vals=days.map(d=>d.pnl_pct*100);
+  const ext=Math.max(0.1,...vals.map(Math.abs));
+  const W=600,mid=58,bw=Math.min(34,(W-20)/days.length-2);
+  svg.innerHTML=`<line x1="4" y1="${mid}" x2="${W-4}" y2="${mid}" stroke="#21262d"/>`+
+    days.map((d,i)=>{
+      const v=vals[i],h=Math.abs(v)/ext*46;
+      const x=10+i*(bw+2),y=v>=0?mid-h:mid;
+      return `<rect x="${x}" y="${y}" width="${bw}" height="${Math.max(h,1)}" rx="2" `+
+        `fill="${v>=0?"#3fb950":"#f85149"}"><title>${d.date}  ${sign(v)}${v.toFixed(2)}%</title></rect>`;
+    }).join("")+
+    `<text x="4" y="10">${sign(ext)}${ext.toFixed(1)}%</text><text x="4" y="116">-${ext.toFixed(1)}%</text>`;
+}
+function chips(s){
+  const h=s.hunch,p=s.plan;
+  $("chips").innerHTML=
+    (h&&h.suspected_day_type?`<span class="chip">gut: ${h.suspected_day_type} (${h.based_on} days)</span>`:"")+
+    `<span class="chip">instrument: ${(p&&p.instrument)||"shares"}</span>`+
+    `<span class="chip">trades: ${s.trades_today||0}/40</span>`;
 }
 function positions(s){
   const rows=(s.positions||[]).map(p=>`<tr><td>${p.symbol}</td><td class="num">${p.quantity}</td>`+
@@ -206,7 +349,8 @@ function beliefs(s){
 const es=new EventSource("/events");
 es.onmessage=m=>{lastMsg=Date.now();const s=JSON.parse(m.data);
   $("halt").style.display=s.halted?"block":"none";
-  tiles(s);spark(s.equity_series);positions(s);feed(s);plan(s);score(s);beliefs(s);};
+  tiles(s);chips(s);spark(s.equity_series);minis(s);signals(s);meters(s);
+  dailyPnl(s);positions(s);feed(s);plan(s);score(s);beliefs(s);};
 setInterval(()=>{$("dot").className="dot"+(Date.now()-lastMsg>8000?" stale":"")},2000);
 </script></body></html>"""
 
