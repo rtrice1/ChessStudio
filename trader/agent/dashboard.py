@@ -89,7 +89,10 @@ class StateAssembler:
         journal = _read_jsonl_tail(os.path.join(self.desk_dir, "journal.jsonl"), 40)
         beliefs = _read_json(os.path.join(self.desk_dir, "beliefs.json")) or {}
         gut_checks = [e for e in ledger if e.get("kind") == "gut_check"]
+        # The 40/day risk cap counts entries (BUYs); mirror that here so the
+        # meter measures headroom against the actual rule.
         fills_today = [e for e in ledger if e.get("kind") == "fill"
+                       and e.get("action") == "BUY"
                        and e.get("ts", "")[:10] == ts[:10]]
         return {
             "ts": time.time(),
