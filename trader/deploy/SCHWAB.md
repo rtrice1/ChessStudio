@@ -46,9 +46,14 @@ data access and prints the token's age.
 ```bash
 python -m agent.schwab test          # quotes + account visibility
 python -m agent.run_live --once      # one full poll/decide cycle
-python -m agent.run_live             # the real thing, 9:30-16:00 ET
+# shadow the real stake: $10k book, PDT guard active below $25k
+python -m agent.run_live --starting-cash 10000
 python -m agent.metrics              # scoreboard afterwards
 ```
+
+Panic button (any time, from any terminal): `python -m agent.panic` —
+writes `data/HALT` first so nothing re-enters, then market-flattens the
+whole shadow book. Removing the HALT file afterwards is a human decision.
 
 `run_live` is **shadow mode and only shadow mode**: real Schwab quotes,
 chains, and account visibility; every order fills in a local book

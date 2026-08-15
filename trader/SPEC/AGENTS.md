@@ -129,6 +129,8 @@ $3/month of judgment before any escalations.
 | Entry cutoff | no new entries after ~90% of the session |
 | End of day | flat by 15:45, unconditionally, in code |
 | Kill switch | `data/HALT` file halts everything; only a human deletes it |
+| Panic button | `python -m agent.panic`: HALT first, then market-flatten the whole book — the manual backstop for software stops when the loop itself is dead |
+| PDT guard | below $25k equity: max 3 day trades per rolling 5 sessions, enforced in `risk.py` (cash account ⇒ human raises it by hand) |
 
 No agent tier may modify `risk.py`, ledger history, the desk journal
 (append-only), or the kill switch.
@@ -139,9 +141,22 @@ No agent tier may modify `risk.py`, ledger history, the desk journal
   business days must hold ≥ $25,000 equity. Under that, the account gets
   frozen for 90 days. So real day trading means either ≥$25k in a margin
   account or a cash account instead.
+- **The $10k stake makes this concrete.** `risk.py` now enforces the
+  guard in code: below `pdt_min_equity` ($25k), entries stop once the
+  rolling 5-session day-trade count reaches `max_day_trades_5d` (3).
+  The live runner seeds the count from the ledger each morning and
+  every closing fill advances it; the dashboard shows the budget as a
+  meter whenever equity is under $25k. If the account is confirmed CASH
+  (no PDT rule), a human raises `max_day_trades_5d` by editing
+  `risk.py` — same rule as every other limit. **Recommendation: open
+  the $10k account as a cash account.** Three day trades a week is not
+  a day-trading desk; a cash account with T+1 options settlement is.
 - **Cash account day trading** avoids PDT but proceeds settle T+1 —
   trading with unsettled funds triggers good-faith violations. The
   strategist must then treat settled cash, not cash, as the budget.
+  With ~$600 max total option premium at $10k, T+1 recycling is rarely
+  the binding constraint, but the plan should still lean on fewer,
+  better entries — which the position budget already enforces.
 - Wash-sale rules make the tax accounting of frequent same-symbol trades
   genuinely annoying; the ledger records everything needed, but a human
   (or their accountant) owns filing.

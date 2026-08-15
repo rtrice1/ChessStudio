@@ -30,6 +30,7 @@ from agent.desk import Desk                     # noqa: E402
 from agent.events import active_blackouts, load_events, should_flatten  # noqa: E402
 from agent.gut import Gut                       # noqa: E402
 from agent.ledger import Ledger                 # noqa: E402
+from agent.metrics import day_trades_last_sessions  # noqa: E402
 from agent.poller import poll_once              # noqa: E402
 from agent.schwab import SchwabClient, TokenStore  # noqa: E402
 from agent.shadow import ShadowBroker           # noqa: E402
@@ -95,8 +96,17 @@ def main() -> int:
     ledger.record("live_session_start", {
         "mode": "shadow", "equity": start["equity"],
         "instrument": ctx.plan.instrument, "plan": ctx.plan.rationale})
+    # Seed the rolling PDT budget from the ledger (this session's marker is
+    # already in it, so the count covers 4 prior sessions + today's sells).
+    ctx.day_trades_5d = day_trades_last_sessions(
+        os.path.join(args.data_dir, "ledger.jsonl"), sessions=5)
     print(f"SHADOW day | equity {start['equity']:.2f} | "
           f"instrument {ctx.plan.instrument} | plan: {ctx.plan.rationale[:80]}")
+    if float(start["equity"]) < ctx.limits.pdt_min_equity:
+        budget = max(0, ctx.limits.max_day_trades_5d - ctx.day_trades_5d)
+        print(f"PDT guard | equity < {ctx.limits.pdt_min_equity:.0f}: "
+              f"{ctx.day_trades_5d} day trades used in 5 sessions, "
+              f"{budget} left (margin-account rule; cash accounts exempt)")
 
     events = load_events(args.data_dir)
     if events:

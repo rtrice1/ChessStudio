@@ -39,6 +39,14 @@ class RiskLimits:
     # total premium-at-risk caps as fractions of equity.
     max_option_premium_pct: float = 0.02
     max_total_option_premium_pct: float = 0.06
+    # FINRA pattern-day-trader rule: below this equity in a MARGIN account,
+    # more than 3 day trades in 5 rolling sessions flags the account and
+    # freezes it. Enforced here so a small account physically can't trip
+    # it. A cash account has no PDT rule — a human who has confirmed the
+    # account type is cash may raise max_day_trades_5d (human edit only,
+    # like every limit in this file).
+    pdt_min_equity: float = 25_000.0
+    max_day_trades_5d: int = 3
 
 
 @dataclass
@@ -69,6 +77,7 @@ def check_order(
     limits: RiskLimits | None = None,
     trades_today: int | None = None,
     session_pct: float | None = None,
+    day_trades_5d: int | None = None,
 ) -> RiskVerdict:
     """Validate a proposed order against hard limits.
 
@@ -79,6 +88,9 @@ def check_order(
     session_pct: fraction of the trading session elapsed (0.0 open, 1.0 close);
                  new entries are refused late in the day so the mandatory
                  end-of-day flatten never has fresh positions to unwind.
+    day_trades_5d: round trips over the rolling 5 sessions (this one
+                 included), for the sub-$25k PDT guard. None = not tracked
+                 (sims); the live runner always passes it.
     """
     limits = limits or RiskLimits()
 
@@ -107,6 +119,18 @@ def check_order(
         return RiskVerdict(False, f"unknown instruction {instruction!r}")
 
     # --- BUY checks ---
+    # PDT guard: entries stop before the day-trade budget can be exceeded,
+    # because every entry on this desk becomes a day trade (flat by close).
+    # SELLs are never blocked — closing is always allowed and always safe.
+    if (day_trades_5d is not None and equity < limits.pdt_min_equity
+            and day_trades_5d >= limits.max_day_trades_5d):
+        return RiskVerdict(
+            False,
+            f"PDT guard: {day_trades_5d} day trades in 5 sessions with "
+            f"equity {equity:.0f} < {limits.pdt_min_equity:.0f} "
+            f"(cash account? raise max_day_trades_5d by hand)",
+        )
+
     if trades_today is not None and trades_today >= limits.max_daily_trades:
         return RiskVerdict(
             False,

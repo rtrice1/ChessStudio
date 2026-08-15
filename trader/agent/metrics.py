@@ -155,6 +155,20 @@ def reject_histogram(ledger_entries: list[dict]) -> dict:
     return dict(reasons.most_common(10))
 
 
+def day_trades_last_sessions(ledger_path: str, sessions: int = 5) -> int:
+    """SELL fills across the last N sessions (session_start markers),
+    current session included. Flat-by-close makes every SELL a completed
+    day trade, so this is the number the FINRA PDT rule counts."""
+    entries = _read_jsonl(ledger_path)
+    starts = [i for i, e in enumerate(entries)
+              if e.get("kind") in ("session_start", "live_session_start")]
+    if not starts:
+        return 0
+    cut = starts[-sessions] if len(starts) >= sessions else starts[0]
+    return sum(1 for e in entries[cut:]
+               if e.get("kind") == "fill" and e.get("action") == "SELL")
+
+
 def slippage_stats(fills: list[dict]) -> dict:
     """What crossing the spread cost, aggregated from per-fill measurements.
 

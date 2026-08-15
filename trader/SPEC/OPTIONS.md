@@ -59,6 +59,21 @@ the adrenaline — decide whether contracts stay in the plan.
   the human requests this; Level 2 does not permit naked writing, which
   suits us since we never do it.
 - PDT applies to options day trades same as stock: $25k margin account
-  or cash-account settlement discipline (options settle T+1).
+  or cash-account settlement discipline (options settle T+1). The
+  sub-$25k guard in `risk.py` (3 day trades / 5 sessions) counts
+  option round trips too.
 - 0DTE exists daily on SPY/QQQ (and index options); single names are
   weekly. The mock's two expiries (0DTE + weekly) mirror that.
+
+## Sizing at a $10k stake
+
+The premium caps become dollars fast: 2% per play = **$200**, 6% total
+= **$600**. A near-the-money SPY 0DTE call runs ~$150–250/contract —
+one contract, maybe. NVDA or TSLA weeklies often cost more than the
+whole per-play budget, and when `translate_to_calls` can't fit one
+contract under the cap it skips the trade (logged as `no viable call`)
+rather than bending the cap. Practical consequence: at $10k the
+options book is mostly SPY/QQQ 0DTE, single contracts, two or three
+plays a day at most — and that's the guard rails working, not a bug.
+Never "let it ride": premium stop at −50%, target at +200%, flat by
+15:45 like everything else.

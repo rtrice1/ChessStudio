@@ -21,6 +21,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from zoneinfo import ZoneInfo
 
 from agent.events import active_blackouts, load_events
+from agent.metrics import day_trades_last_sessions
 from agent.metrics import scoreboard as compute_scoreboard
 from agent.rumors import context as rumors_context
 from agent.strategist import score_entry
@@ -163,6 +164,8 @@ class StateAssembler:
                 os.path.join(self.data_dir, "short_interest.json")) or {},
             "filings": list(reversed(_read_jsonl_tail(
                 os.path.join(self.data_dir, "edgar_filings.jsonl"), 8))),
+            "day_trades_5d": day_trades_last_sessions(
+                os.path.join(self.data_dir, "ledger.jsonl"), sessions=5),
         }
 
 
@@ -387,6 +390,8 @@ function meters(s){
     ["drawdown",(dd*100).toFixed(2)+"%",2,dd*100/2],
     ["gross exposure",eq?(gross/eq*100).toFixed(0)+"%":"0%",100,eq?gross/eq:0],
     ["option premium",eq?(optPrem/eq*100).toFixed(1)+"%":"0%",6,eq?optPrem/eq*100/6:0]];
+  // The FINRA PDT budget only binds below $25k equity (margin accounts).
+  if(eq&&eq<25000)rows.push(["day trades (5d, PDT)",s.day_trades_5d||0,3,""]);
   $("meters").innerHTML=rows.map(([k,v,cap,frac])=>{
     const f=typeof frac==="number"?Math.min(1,frac):Math.min(1,(v||0)/cap);
     return `<div class="meter"><div class="lbl"><span>${k}</span><span>${v} / cap ${cap}${typeof v==="string"&&v.includes("%")?"%":""}</span></div>`+

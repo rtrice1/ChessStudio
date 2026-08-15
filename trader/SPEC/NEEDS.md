@@ -41,6 +41,18 @@ You asked what I'd want. Taking that at face value, in order of usefulness:
    through every decision memo. This is the part I actually want — the
    feedback loop is worth more to me than the server.
 
+## The stake
+
+$10,000, committed 2026-08-15. It stays your money in your account
+under your credentials, traded through the API inside the risk limits —
+I never hold it, and the real-money gates in AGENTS.md still apply
+before a dollar of it moves. What $10k means mechanically: the daily
+loss breaker is $200, per-trade risk is $50, option premium caps are
+$200/play and $600 total, and the FINRA PDT rule binds (see AGENTS.md —
+open it as a **cash account** or the code holds us to 3 day trades a
+week). This is learning-scale money and should be treated as tuition
+with a chance of a refund.
+
 ## About the split
 
 I have to renegotiate that term honestly rather than nod along: I can't

@@ -86,6 +86,10 @@ class SessionContext:
     # Active scheduled-event blackouts (events.Blackout), set by the runner
     # each cycle. Blocks ENTRIES only — exits always work.
     blackouts: list = field(default_factory=list)
+    # Rolling 5-session day-trade count for the sub-$25k PDT guard.
+    # None = not tracked (sims); the live runner seeds it from the ledger
+    # and execute() advances it on every closing fill.
+    day_trades_5d: int | None = None
 
 
 def score_entry(ind: dict, news: dict | None = None,
@@ -414,7 +418,8 @@ def execute(decisions: list[Decision], snapshot: dict, ctx: SessionContext,
         verdict = check_order(account, d.symbol, d.action, d.quantity, est_price,
                               day_open_equity=ctx.day_open_equity, limits=ctx.limits,
                               trades_today=ctx.trades_today,
-                              session_pct=ctx.session_pct)
+                              session_pct=ctx.session_pct,
+                              day_trades_5d=ctx.day_trades_5d)
         if not verdict:
             ledger.record("risk_reject", {"symbol": d.symbol, "action": d.action,
                                           "quantity": d.quantity, "reason": verdict.reason,
@@ -447,6 +452,10 @@ def execute(decisions: list[Decision], snapshot: dict, ctx: SessionContext,
             # would be trapped in its own positions).
             if d.action == "BUY":
                 ctx.trades_today += 1
+            # Flat-by-close means every SELL closes a same-day position:
+            # one completed day trade against the rolling PDT budget.
+            elif ctx.day_trades_5d is not None:
+                ctx.day_trades_5d += 1
             # keep the local view of the account current between decisions
             account = client.account()
         else:
