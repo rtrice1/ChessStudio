@@ -1,0 +1,16 @@
+[Unit]
+Description=Trader desk dashboard (live SSE front end on :8899)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=@INSTALL_DIR@
+ExecStart=/usr/bin/python3 -m agent.dashboard --port 8899 --data-dir @INSTALL_DIR@/data --desk-dir @INSTALL_DIR@/desk_state
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=@INSTALL_DIR@
+
+[Install]
+WantedBy=multi-user.target

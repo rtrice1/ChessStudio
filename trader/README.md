@@ -48,6 +48,7 @@ trader/
 │   ├── schwab.py        # REAL Schwab data client (read-only; orders structurally disabled)
 │   ├── shadow.py        # shadow broker: real quotes in, orders fill in a local book
 │   ├── run_live.py      # the live shadow day: wall-clock, market hours, real data
+│   ├── dashboard.py     # the front end: one live page, SSE streaming, no refresh
 │   └── run_day.py       # simulate one full trading day, flatten at close, journal it
 ├── desk_state/
 │   └── identity.md      # what each strategist instance wakes up to

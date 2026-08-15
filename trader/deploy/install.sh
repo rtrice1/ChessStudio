@@ -23,7 +23,7 @@ if [ ! -f "$INSTALL_DIR/desk_state/identity.md" ]; then
 fi
 
 for unit in trader-mock.service trader-poller.service trader-simday.service \
-            trader-simday.timer trader-strategist@.service \
+            trader-simday.timer trader-dashboard.service trader-strategist@.service \
             trader-strategist-plan.timer trader-strategist-midday.timer \
             trader-strategist-postmortem.timer; do
   sed "s|@INSTALL_DIR@|$INSTALL_DIR|g" "$SRC_DIR/deploy/$unit" > "$UNIT_DIR/$unit"
@@ -33,6 +33,7 @@ systemctl daemon-reload
 systemctl enable --now trader-mock.service
 sleep 2
 systemctl enable --now trader-poller.service
+systemctl enable --now trader-dashboard.service
 systemctl enable --now trader-simday.timer
 # Strategist judgment slots — dry-run until an API key is configured (see
 # trader-strategist@.service comments): prompts and estimated costs only.
