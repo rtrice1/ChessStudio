@@ -52,7 +52,13 @@ python -m agent.metrics              # scoreboard afterwards
 
 `run_live` is **shadow mode and only shadow mode**: real Schwab quotes,
 chains, and account visibility; every order fills in a local book
-(`data/shadow_book.json`). `SchwabClient.place_order` raises
+(`data/shadow_book.json`). Quotes come from the **Streamer websocket**
+when `websocket-client` is installed (`pip3 install -r
+requirements.txt`) — real-time ticks, options subscribed as positions
+open, automatic reconnect — and degrade to REST polling whenever the
+stream is stale or absent. The close-of-day `stream_stats` ledger entry
+shows the hit/fallback split, and the first raw frame is logged so we
+can verify the field mapping on day one. `SchwabClient.place_order` raises
 unconditionally — there is no flag that arms real orders. Options
 entries (`--instrument calls`) shadow-fill against real chain quotes,
 which is where we find out what real spreads do to the strategy.

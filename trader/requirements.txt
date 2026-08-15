@@ -1,0 +1,4 @@
+# The desk's only runtime dependency (explicit decision, 2026-08-15):
+# real-time quotes via the Schwab Streamer websocket. Everything else is
+# stdlib; without this installed, the desk runs REST-polling only.
+websocket-client>=1.6

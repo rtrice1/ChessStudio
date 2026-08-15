@@ -46,6 +46,7 @@ trader/
 │   ├── ledger.py        # append-only JSONL audit trail
 │   ├── metrics.py       # the scoreboard: expectancy, calibration, cost of judgment
 │   ├── schwab.py        # REAL Schwab data client (read-only; orders structurally disabled)
+│   ├── stream.py        # Schwab Streamer websocket: real-time ticks, REST fallback
 │   ├── shadow.py        # shadow broker: real quotes in, orders fill in a local book
 │   ├── run_live.py      # the live shadow day: wall-clock, market hours, real data
 │   ├── dashboard.py     # the front end: one live page, SSE streaming, no refresh

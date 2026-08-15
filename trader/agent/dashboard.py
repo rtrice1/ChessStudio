@@ -265,12 +265,20 @@ function signals(s){
     const n=news[sym]||{};
     const senti=(n.wire_sentiment!=null)?`${sign(n.wire_sentiment)}${n.wire_sentiment}/${sign(n.board_sentiment)}${n.board_sentiment}`:"—";
     const badges=(alertsBy[sym]||[]).map(k=>`<span class="badge">${k}</span>`).join("");
+    const mh=i.macd_hist,adx=i.adx,pb=i.bb_percent_b,rv=i.rel_volume;
+    const macdCell=mh==null?"—":`<span class="${cls(mh)}">${sign(mh)}${Number(mh).toFixed(2)}</span>`;
+    const adxCell=adx==null?"—":`${Number(adx).toFixed(0)}${adx>=25?" ▲":""}`;
+    const pbCell=pb==null?"—":bullet(pb,0,1,[0.5]);
+    const rvCell=rv==null?"—":`<span class="${rv>1.5?"pos":""}">${Number(rv).toFixed(1)}x</span>`;
     return `<tr><td style="color:var(--ink)">${sym}</td><td class="num">${fmt(last)}</td>`+
       `<td class="num ${cls(chg)}">${chg==null?"—":sign(chg)+chg.toFixed(2)+"%"}</td>`+
-      `<td>${bullet(i.rsi14,0,100,[30,70])}</td><td>${vsV}</td><td>${rangePos}</td>`+
+      `<td>${bullet(i.rsi14,0,100,[30,70])}</td><td class="num">${macdCell}</td>`+
+      `<td class="num">${adxCell}</td><td>${pbCell}</td><td class="num">${rvCell}</td>`+
+      `<td>${vsV}</td><td>${rangePos}</td>`+
       `<td class="num">${senti}</td><td>${badges}</td></tr>`;
   }).join("");
   $("signals").innerHTML=`<tr><th>sym</th><th>last</th><th>day</th><th>rsi (30/70)</th>`+
+    `<th>macd-h</th><th>adx</th><th>%b</th><th>rvol</th>`+
     `<th>vwap</th><th>range pos</th><th>wire/board</th><th>alerts</th></tr>${rows}`;
 }
 function meters(s){

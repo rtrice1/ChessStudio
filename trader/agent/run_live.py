@@ -32,6 +32,7 @@ from agent.ledger import Ledger                 # noqa: E402
 from agent.poller import poll_once              # noqa: E402
 from agent.schwab import SchwabClient, TokenStore  # noqa: E402
 from agent.shadow import ShadowBroker           # noqa: E402
+from agent.stream import StreamingDataFeed      # noqa: E402
 from agent.strategist import (                  # noqa: E402
     DayPlan, SessionContext, decide, execute, flatten_all, option_exits,
 )
@@ -75,9 +76,12 @@ def main() -> int:
     ap.add_argument("--instrument", choices=["shares", "calls"], default=None)
     ap.add_argument("--once", action="store_true",
                     help="one cycle then exit (plumbing check outside hours)")
+    ap.add_argument("--no-stream", action="store_true",
+                    help="REST polling only (default: stream when available)")
     args = ap.parse_args()
 
-    data = SchwabClient(TokenStore())
+    data = StreamingDataFeed(SchwabClient(TokenStore()), SYMBOLS,
+                             enable_stream=not args.no_stream)
     broker = ShadowBroker(data, SYMBOLS, starting_cash=args.starting_cash,
                           book_path=os.path.join(args.data_dir, "shadow_book.json"))
     ledger = Ledger(os.path.join(args.data_dir, "ledger.jsonl"))
@@ -121,6 +125,11 @@ def main() -> int:
                 decisions += option_exits(snapshot["account"], broker, ctx.plan)
             executed = execute(decisions, snapshot, ctx, broker, ledger)
             if executed:
+                # Stream quotes for any contracts we just opened.
+                opened = [e["symbol"] for e in executed
+                          if e["action"] == "BUY" and len(e["symbol"]) > 10]
+                if opened:
+                    data.subscribe_options(opened)
                 for e in executed:
                     print(f"{now:%H:%M} | {e['action']} {e['quantity']}x "
                           f"{e['symbol']} | {e['rationale'][:70]}")
@@ -152,6 +161,9 @@ def main() -> int:
         "daily_stop_hit": day_stopped, "day_type": day_type,
         "instrument": ctx.plan.instrument, "plan": ctx.plan.rationale})
     broker.save()
+    if hasattr(data, "stats"):
+        ledger.record("stream_stats", data.stats())
+        print(f"stream    | {data.stats()}")
     print(f"SHADOW close | equity {final['equity']:.2f} | P&L {pnl:+.2f} | "
           f"trades {ctx.trades_today} | flat: {not open_pos} | "
           f"day type: {day_type}")

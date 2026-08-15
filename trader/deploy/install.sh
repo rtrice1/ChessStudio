@@ -15,6 +15,11 @@ EOF
 
 echo "installing from $SRC_DIR to $INSTALL_DIR"
 mkdir -p "$INSTALL_DIR"
+# The desk's one runtime dependency (Schwab Streamer websocket). Failure is
+# non-fatal: without it the desk runs REST-polling only.
+pip3 install --quiet -r "$SRC_DIR/requirements.txt" 2>/dev/null \
+  || pip3 install --quiet --break-system-packages -r "$SRC_DIR/requirements.txt" \
+  || echo "WARN: websocket-client not installed; streaming disabled (REST polling still works)"
 cp -r "$SRC_DIR/mockschwab" "$SRC_DIR/agent" "$SRC_DIR/SPEC" "$INSTALL_DIR/"
 mkdir -p "$INSTALL_DIR/data" "$INSTALL_DIR/desk_state"
 # Never clobber accumulated desk state on reinstall; seed identity only if absent.
