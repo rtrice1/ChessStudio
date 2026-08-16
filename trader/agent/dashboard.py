@@ -166,7 +166,21 @@ class StateAssembler:
                 os.path.join(self.data_dir, "edgar_filings.jsonl"), 8))),
             "day_trades_5d": day_trades_last_sessions(
                 os.path.join(self.data_dir, "ledger.jsonl"), sessions=5),
+            "wrapup": self._latest_wrapup(),
         }
+
+    def _latest_wrapup(self) -> dict | None:
+        d = os.path.join(self.desk_dir, "wrapups")
+        if not os.path.isdir(d):
+            return None
+        files = sorted(f for f in os.listdir(d) if f.endswith(".md"))
+        if not files:
+            return None
+        try:
+            with open(os.path.join(d, files[-1]), encoding="utf-8") as f:
+                return {"date": files[-1][:-3], "text": f.read()[:4000]}
+        except OSError:
+            return None
 
 
 PAGE = """<!DOCTYPE html>
@@ -233,6 +247,7 @@ small{color:var(--muted)}
   <div class="panel"><h2>Overnight rumors &amp; filings</h2><div id="rumors" style="font-size:12.5px;color:var(--ink2)">—</div></div>
   <div class="panel"><h2>Scoreboard</h2><table id="score"></table></div>
   <div class="panel"><h2>What worked — reasoning vs results</h2><div id="whatworked" style="font-size:12.5px;color:var(--ink2)">—</div></div>
+  <div class="panel"><h2>Daily wrap-up</h2><pre id="wrapup" style="font-size:12px;color:var(--ink2);white-space:pre-wrap;max-height:340px;overflow-y:auto">—</pre></div>
   <div class="panel"><h2>Desk beliefs</h2><div id="beliefs" style="font-size:12.5px;color:var(--ink2)"></div></div>
 </div>
 <script>
@@ -501,12 +516,16 @@ function whatworked(s){
 function beliefs(s){
   $("beliefs").innerHTML=Object.entries(s.beliefs||{}).map(([k,v])=>`<div>• <b>${k}</b>: ${String(v).slice(0,120)}</div>`).join("")||"—";
 }
+function wrapup(s){
+  $("wrapup").textContent=s.wrapup?s.wrapup.text:"— no wrap-up written yet —";
+}
 // One broken panel must never blank the whole desk: each renders inside
 // its own try/catch, and any failure lands visibly in the tab title.
 const PANELS=[["tiles",tiles],["chips",chips],["spark",s=>spark(s.equity_series)],
   ["minis",minis],["signals",signals],["meters",meters],["dailyPnl",dailyPnl],
   ["positions",positions],["feed",feed],["plan",plan],["rumors",rumors],
-  ["score",score],["whatworked",whatworked],["beliefs",beliefs]];
+  ["score",score],["whatworked",whatworked],["beliefs",beliefs],
+  ["wrapup",wrapup]];
 function render(s){
   $("halt").style.display=s.halted?"block":"none";
   for(const [name,fn] of PANELS){

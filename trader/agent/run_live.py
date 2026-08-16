@@ -207,6 +207,13 @@ def main() -> int:
     if hasattr(data, "stats"):
         ledger.record("stream_stats", data.stats())
         print(f"stream    | {data.stats()}")
+    # The daily wrap-up: the report the human actually reads. Written
+    # after the journal entry so it can quote the day's record.
+    try:
+        from agent.wrapup import write as write_wrapup
+        print(f"wrap-up   | {write_wrapup(args.data_dir, args.desk_dir)}")
+    except Exception as exc:
+        print(f"wrap-up   | FAILED: {exc}", file=sys.stderr)
     print(f"SHADOW close | equity {final['equity']:.2f} | P&L {pnl:+.2f} | "
           f"trades {ctx.trades_today} | flat: {not open_pos} | "
           f"day type: {day_type}")

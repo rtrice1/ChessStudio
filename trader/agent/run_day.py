@@ -184,6 +184,11 @@ def main() -> int:
         "seed": args.seed,
     })
 
+    try:
+        from agent.wrapup import write as write_wrapup
+        print(f"wrap-up   | {write_wrapup(args.data_dir, args.desk_dir)}")
+    except Exception as exc:
+        print(f"wrap-up   | FAILED: {exc}", file=sys.stderr)
     print(f"day close | equity {final['equity']:.2f} | P&L {pnl:+.2f} "
           f"({pnl / float(start['equity']):+.2%}) | trades {ctx.trades_today} | "
           f"flat: {not open_pos}")
