@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import statistics
 from collections import Counter, deque
 
@@ -27,7 +28,9 @@ def round_trips(fills: list[dict]) -> list[dict]:
     """FIFO-pair BUY/SELL fills into closed round trips per symbol.
 
     Each fill payload carries symbol, action, quantity, and order.fillPrice.
-    Returns [{"symbol", "quantity", "entry", "exit", "pnl"}...] in exit order.
+    Returns [{"symbol", "quantity", "entry", "exit", "pnl",
+    "entry_rationale", "exit_rationale"}...] in exit order — the rationales
+    ride along so reasoning_stats() can grade WHY next to WHAT.
     """
     lots: dict[str, deque] = {}
     trips: list[dict] = []
@@ -37,8 +40,9 @@ def round_trips(fills: list[dict]) -> list[dict]:
         price = float(((fill.get("order") or {}).get("fillPrice")) or 0.0)
         if not symbol or qty <= 0 or price <= 0:
             continue
+        rationale = str(fill.get("rationale") or "")
         if fill.get("action") == "BUY":
-            lots.setdefault(symbol, deque()).append([qty, price])
+            lots.setdefault(symbol, deque()).append([qty, price, rationale])
         elif fill.get("action") == "SELL":
             queue = lots.setdefault(symbol, deque())
             remaining = qty
@@ -47,7 +51,9 @@ def round_trips(fills: list[dict]) -> list[dict]:
                 take = min(remaining, lot[0])
                 trips.append({"symbol": symbol, "quantity": take,
                               "entry": lot[1], "exit": price,
-                              "pnl": round((price - lot[1]) * take, 4)})
+                              "pnl": round((price - lot[1]) * take, 4),
+                              "entry_rationale": lot[2],
+                              "exit_rationale": rationale})
                 lot[0] -= take
                 remaining -= take
                 if lot[0] == 0:
@@ -155,6 +161,84 @@ def reject_histogram(ledger_entries: list[dict]) -> dict:
     return dict(reasons.most_common(10))
 
 
+# Rationale strings are structured on purpose: "TAG: details | extras".
+# The tag is the reasoning category; the score is embedded by score_entry.
+_SCORE_RE = re.compile(r"score ([+-]?\d+(?:\.\d+)?)")
+
+
+def _reason_tag(rationale: str) -> str:
+    head = str(rationale or "").split(":", 1)[0].strip().lower()
+    return head or "unknown"
+
+
+def _score_band(rationale: str) -> str | None:
+    m = _SCORE_RE.search(str(rationale or ""))
+    if not m:
+        return None
+    s = float(m.group(1))
+    if s < 0:
+        return "<0"
+    if s >= 3:
+        return ">=3"
+    return f"{int(s)}-{int(s) + 1}"
+
+
+def _bucket(pnls: list[float]) -> dict:
+    wins = [p for p in pnls if p > 0]
+    return {"n": len(pnls),
+            "win_rate": round(len(wins) / len(pnls), 3) if pnls else None,
+            "total_pnl": round(sum(pnls), 2),
+            "avg_pnl": round(sum(pnls) / len(pnls), 2) if pnls else None}
+
+
+def reasoning_stats(trips: list[dict]) -> dict:
+    """Which reasoning works — P&L grouped by WHY, not just what.
+
+    by_exit answers "which exit rules earn their keep" (does the
+    inflection exit beat riding to the ATR target? is 'lost VWAP' a
+    save or a shakeout?). by_entry_score answers "does the entry
+    ranking actually rank" — if >=3-score entries don't outperform 0-1
+    entries, the scoring weights are decoration and should be changed.
+    Every number is recomputed from the rationale strings frozen into
+    the ledger at decision time, so the reasoning being graded is
+    exactly the reasoning that traded — not a reconstruction.
+    """
+    by_exit: dict[str, list[float]] = {}
+    by_score: dict[str, list[float]] = {}
+    for t in trips:
+        by_exit.setdefault(_reason_tag(t.get("exit_rationale")), []).append(t["pnl"])
+        band = _score_band(t.get("entry_rationale"))
+        if band is not None:
+            by_score.setdefault(band, []).append(t["pnl"])
+    return {"by_exit": {k: _bucket(v) for k, v in sorted(by_exit.items())},
+            "by_entry_score": {k: _bucket(v) for k, v in sorted(by_score.items())}}
+
+
+def plan_stats(journal: list[dict]) -> dict:
+    """Plan-level reasoning graded per day: the benchmark default plan
+    vs LLM-authored plans vs gut-shaded days. This is the cheap version
+    of plan-alpha — whether the judgment layer beats its own baseline."""
+    days = [d for d in journal if d.get("kind") == "trading_day"
+            and d.get("pnl_pct") is not None]
+
+    def agg(sub: list[dict]) -> dict:
+        if not sub:
+            return {"days": 0}
+        pnls = [float(d["pnl_pct"]) for d in sub]
+        return {"days": len(pnls),
+                "avg_pnl_pct": round(statistics.mean(pnls), 6),
+                "win_days": sum(1 for p in pnls if p > 0)}
+
+    plan_of = lambda d: str(d.get("plan") or "")  # noqa: E731
+    return {
+        "benchmark": agg([d for d in days
+                          if plan_of(d).startswith("default mechanical plan")]),
+        "llm_plan": agg([d for d in days
+                         if not plan_of(d).startswith("default mechanical plan")]),
+        "gut_shaded": agg([d for d in days if "gut:" in plan_of(d)]),
+    }
+
+
 def day_trades_last_sessions(ledger_path: str, sessions: int = 5) -> int:
     """SELL fills across the last N sessions (session_start markers),
     current session included. Flat-by-close makes every SELL a completed
@@ -229,10 +313,13 @@ def scoreboard(data_dir: str, desk_dir: str) -> dict:
     journal = _read_jsonl(os.path.join(desk_dir, "journal.jsonl"))
     tokens = _read_jsonl(os.path.join(data_dir, "token_ledger.jsonl"))
     fills = [e for e in ledger if e.get("kind") == "fill"]
+    trips = round_trips(fills)
     return {
-        "per_trade": trade_stats(round_trips(fills)),
+        "per_trade": trade_stats(trips),
         "per_day": daily_stats(journal),
         "slippage": slippage_stats(fills),
+        "reasoning": reasoning_stats(trips),
+        "plans": plan_stats(journal),
         "hunch_calibration": hunch_calibration(ledger, journal),
         "risk_rejects": reject_histogram(ledger),
         "judgment_cost": judgment_cost(tokens),

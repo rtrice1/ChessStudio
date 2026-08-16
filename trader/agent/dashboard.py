@@ -232,6 +232,7 @@ small{color:var(--muted)}
   <div class="panel"><h2>Day plan</h2><div id="plan" style="color:var(--ink2);font-size:13px">—</div></div>
   <div class="panel"><h2>Overnight rumors &amp; filings</h2><div id="rumors" style="font-size:12.5px;color:var(--ink2)">—</div></div>
   <div class="panel"><h2>Scoreboard</h2><table id="score"></table></div>
+  <div class="panel"><h2>What worked — reasoning vs results</h2><div id="whatworked" style="font-size:12.5px;color:var(--ink2)">—</div></div>
   <div class="panel"><h2>Desk beliefs</h2><div id="beliefs" style="font-size:12.5px;color:var(--ink2)"></div></div>
 </div>
 <script>
@@ -481,6 +482,22 @@ function rumors(s){
       f.map(x=>`<div><span style="color:var(--muted);margin-right:6px">${(x.updated||"").slice(5,16)}</span>${x.symbol||""} ${x.form||""} <small>${(x.company||"").slice(0,40)}</small></div>`).join("")+`</div>`;
   $("rumors").innerHTML=html;
 }
+function whatworked(s){
+  const sb=s.scoreboard;
+  if(!sb||!sb.reasoning){$("whatworked").innerHTML="—";return}
+  const line=(k,v)=>`<tr><td>${k}</td><td class="num">${v.n}</td>`+
+    `<td class="num">${v.win_rate==null?"—":(v.win_rate*100).toFixed(0)+"%"}</td>`+
+    `<td class="num ${cls(v.total_pnl)}">${sign(v.total_pnl)}${fmt(v.total_pnl)}</td></tr>`;
+  let html="<table><tr><th>exit reason</th><th>n</th><th>win</th><th>pnl</th></tr>";
+  for(const [k,v] of Object.entries(sb.reasoning.by_exit||{}))html+=line(k,v);
+  html+="<tr><th>entry score</th><th>n</th><th>win</th><th>pnl</th></tr>";
+  for(const [k,v] of Object.entries(sb.reasoning.by_entry_score||{}))html+=line(k,v);
+  html+="</table>";
+  const plans=Object.entries(sb.plans||{}).filter(([,v])=>v.days)
+    .map(([k,v])=>`${k}: ${v.days}d, avg ${(v.avg_pnl_pct*100).toFixed(2)}%/day`);
+  if(plans.length)html+=`<div style="margin-top:6px"><small>${plans.join(" · ")}</small></div>`;
+  $("whatworked").innerHTML=html;
+}
 function beliefs(s){
   $("beliefs").innerHTML=Object.entries(s.beliefs||{}).map(([k,v])=>`<div>• <b>${k}</b>: ${String(v).slice(0,120)}</div>`).join("")||"—";
 }
@@ -489,7 +506,7 @@ function beliefs(s){
 const PANELS=[["tiles",tiles],["chips",chips],["spark",s=>spark(s.equity_series)],
   ["minis",minis],["signals",signals],["meters",meters],["dailyPnl",dailyPnl],
   ["positions",positions],["feed",feed],["plan",plan],["rumors",rumors],
-  ["score",score],["beliefs",beliefs]];
+  ["score",score],["whatworked",whatworked],["beliefs",beliefs]];
 function render(s){
   $("halt").style.display=s.halted?"block":"none";
   for(const [name,fn] of PANELS){

@@ -34,6 +34,64 @@ class TestRoundTrips(unittest.TestCase):
         self.assertEqual(trips[0]["pnl"], -10.0)
 
 
+class TestReasoningStats(unittest.TestCase):
+    def rfill(self, symbol, action, qty, price, rationale):
+        return {**fill(symbol, action, qty, price), "rationale": rationale}
+
+    def test_rationales_ride_the_round_trip(self):
+        from agent.metrics import round_trips
+        trips = round_trips([
+            self.rfill("AAPL", "BUY", 10, 100.0, "ORB: breakout | score +3.50 (adx)"),
+            self.rfill("AAPL", "SELL", 10, 103.0, "ATR target: 103 >= 102.5")])
+        self.assertEqual(trips[0]["entry_rationale"],
+                         "ORB: breakout | score +3.50 (adx)")
+        self.assertEqual(trips[0]["exit_rationale"], "ATR target: 103 >= 102.5")
+
+    def test_pnl_grouped_by_exit_reason_and_entry_score(self):
+        from agent.metrics import reasoning_stats, round_trips
+        fills = []
+        # two strong-score winners via ATR target, one weak-score loser via stop
+        for px_out, score in ((103.0, "+3.50"), (103.0, "+3.25")):
+            fills.append(self.rfill("AAPL", "BUY", 10, 100.0,
+                                    f"ORB: x | score {score} (stuff)"))
+            fills.append(self.rfill("AAPL", "SELL", 10, px_out,
+                                    "ATR target: hit"))
+        fills.append(self.rfill("MSFT", "BUY", 10, 100.0,
+                                "ORB: x | score +0.25 (thin)"))
+        fills.append(self.rfill("MSFT", "SELL", 10, 98.0, "ATR stop: hit"))
+        r = reasoning_stats(round_trips(fills))
+        self.assertEqual(r["by_exit"]["atr target"]["n"], 2)
+        self.assertEqual(r["by_exit"]["atr target"]["win_rate"], 1.0)
+        self.assertEqual(r["by_exit"]["atr stop"]["total_pnl"], -20.0)
+        self.assertEqual(r["by_entry_score"][">=3"]["n"], 2)
+        self.assertEqual(r["by_entry_score"]["0-1"]["win_rate"], 0.0)
+
+    def test_unscored_entries_are_not_binned(self):
+        from agent.metrics import reasoning_stats, round_trips
+        fills = [self.rfill("AAPL", "BUY", 10, 100.0, "manual entry, no score"),
+                 self.rfill("AAPL", "SELL", 10, 101.0, "flatten: end of day")]
+        r = reasoning_stats(round_trips(fills))
+        self.assertEqual(r["by_entry_score"], {})
+        self.assertIn("flatten", r["by_exit"])
+
+    def test_plan_stats_separates_benchmark_llm_and_shaded(self):
+        from agent.metrics import plan_stats
+        journal = [
+            {"kind": "trading_day", "pnl_pct": 0.001,
+             "plan": "default mechanical plan (benchmark)"},
+            {"kind": "trading_day", "pnl_pct": -0.002,
+             "plan": "default mechanical plan (benchmark) | gut: chop suspected, risk halved"},
+            {"kind": "trading_day", "pnl_pct": 0.004,
+             "plan": "NVDA momentum day, 3 slots, calls off"},
+            {"kind": "note", "text": "not a trading day"},
+        ]
+        p = plan_stats(journal)
+        self.assertEqual(p["benchmark"]["days"], 2)
+        self.assertEqual(p["llm_plan"]["days"], 1)
+        self.assertEqual(p["gut_shaded"]["days"], 1)
+        self.assertEqual(p["llm_plan"]["avg_pnl_pct"], 0.004)
+
+
 class TestTradeStats(unittest.TestCase):
     def test_expectancy_and_profit_factor(self):
         trips = [{"pnl": 100.0}, {"pnl": 100.0}, {"pnl": -50.0}, {"pnl": -50.0}]
