@@ -2,3 +2,6 @@
 # real-time quotes via the Schwab Streamer websocket. Everything else is
 # stdlib; without this installed, the desk runs REST-polling only.
 websocket-client>=1.6
+# Windows has no system timezone database; zoneinfo needs this there.
+# (No-op on Linux/macOS — the marker keeps it off those installs.)
+tzdata>=2024.1; sys_platform == "win32"

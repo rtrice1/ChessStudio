@@ -16,6 +16,38 @@ Needs: any Linux with systemd, Python 3.11+, ~1GB free disk. No pip, no
 other dependencies. Reinstalling never clobbers accumulated
 `desk_state/` — that's the valuable part.
 
+## Windows stopgap (until the Linux drive arrives)
+
+The agent code is pure Python and runs on Windows as-is — what Windows
+lacks is systemd, so nothing is *scheduled*; you run the pieces by hand
+in terminals. Two good ways:
+
+**Option A — WSL2 (preferred, it IS Linux):** `wsl --install -d Ubuntu`,
+then inside it enable systemd (`/etc/wsl.conf` → `[boot]` /
+`systemd=true`, then `wsl --shutdown` once) and run `install.sh`
+exactly as above. Timers and all. Caveats: Windows sleep suspends the
+whole desk (set power settings to stay awake), and WSL's clock is the
+Windows clock — keep it on America/New_York or the timers fire at the
+wrong hours.
+
+**Option B — native Windows Python:** `pip install -r requirements.txt`
+(this pulls `tzdata`, which Windows needs for timezone support), then
+run pieces manually:
+
+```powershell
+python -m unittest discover -s tests     # should be all green, same as Linux
+python -m mockschwab.server --port 8788  # terminal 1: mock market
+python -m agent.dashboard                # terminal 2: http://localhost:8899
+python -m agent.run_day                  # a simulated day, any time
+python -m agent.rumors scan              # by hand, evening + pre-open
+python -m agent.rumors grade             # by hand, after the close
+python -m agent.run_live --starting-cash 10000   # Monday, 9:30-16:00 ET
+```
+
+The desk's entire state is `data/` + `desk_state/` — when the Linux
+drive arrives, copy those two directories over and nothing is lost:
+the journal, beliefs, gut memory, and every ledger line move with them.
+
 ## What runs
 
 | Unit | What | When |
