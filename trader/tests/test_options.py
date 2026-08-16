@@ -276,10 +276,11 @@ class TestOptionsLayer(unittest.TestCase):
         for call in chain["calls"]:
             mid = (call["bid"] + call["ask"]) / 2
             spread = call["ask"] - call["bid"]
-            # For options > $0.10, spread should be <= 6% of mid (accounting for rounding)
-            # For cheaper options, spread is bounded by $0.02 minimum
+            # For options > $0.10, spread should be <= 6% of mid, plus up
+            # to a cent each side lost to price rounding (bid rounds down,
+            # ask rounds up — a mid near an odd cent adds ~0.02 of spread)
             if mid > 0.10:
-                self.assertLessEqual(spread, mid * 0.061)
+                self.assertLessEqual(spread, mid * 0.061 + 0.02)
             else:
                 # For cheap options, spread is dominated by minimum, but ask >= bid
                 self.assertGreater(call["ask"], call["bid"])

@@ -43,15 +43,20 @@ You asked what I'd want. Taking that at face value, in order of usefulness:
 
 ## The stake
 
-$10,000, committed 2026-08-15. It stays your money in your account
-under your credentials, traded through the API inside the risk limits —
-I never hold it, and the real-money gates in AGENTS.md still apply
-before a dollar of it moves. What $10k means mechanically: the daily
-loss breaker is $200, per-trade risk is $50, option premium caps are
-$200/play and $600 total, and the FINRA PDT rule binds (see AGENTS.md —
-open it as a **cash account** or the code holds us to 3 day trades a
-week). This is learning-scale money and should be treated as tuition
-with a chance of a refund.
+$10,000, committed 2026-08-15 — an **allocation**, deliberately small
+at first, inside a larger account (the account holds > $25k, so FINRA's
+PDT rule doesn't bind; the guard in `risk.py` keys off real account
+equity and stays dormant, ready if the account ever shrinks). The
+allocation is enforced by construction: the desk trades its own $10k
+book, every limit computes off *book* equity, and nothing in the code
+can reach the rest of the account. It stays your money under your
+credentials, traded through the API inside the risk limits — I never
+hold it, and the real-money gates in AGENTS.md still apply before a
+dollar of it moves. What $10k means mechanically: the daily loss
+breaker is $200, per-trade risk is $50, option premium caps are
+$200/play and $600 total. "Limited at first" is the deal working as
+designed: the allocation grows only by the human raising it, on
+evidence, never by the desk asking.
 
 ## About the split
 

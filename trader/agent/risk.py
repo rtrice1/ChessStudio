@@ -78,6 +78,7 @@ def check_order(
     trades_today: int | None = None,
     session_pct: float | None = None,
     day_trades_5d: int | None = None,
+    pdt_equity: float | None = None,
 ) -> RiskVerdict:
     """Validate a proposed order against hard limits.
 
@@ -91,6 +92,12 @@ def check_order(
     day_trades_5d: round trips over the rolling 5 sessions (this one
                  included), for the sub-$25k PDT guard. None = not tracked
                  (sims); the live runner always passes it.
+    pdt_equity: the equity FINRA's PDT rule actually looks at — the whole
+                 brokerage account, not this desk's allocation. When the
+                 desk trades a $10k slice of a $25k+ account, the runner
+                 passes the real account equity here so the guard doesn't
+                 bind on the slice. None falls back to book equity, which
+                 is the conservative direction.
     """
     limits = limits or RiskLimits()
 
@@ -122,12 +129,15 @@ def check_order(
     # PDT guard: entries stop before the day-trade budget can be exceeded,
     # because every entry on this desk becomes a day trade (flat by close).
     # SELLs are never blocked — closing is always allowed and always safe.
-    if (day_trades_5d is not None and equity < limits.pdt_min_equity
+    # The rule keys off the ACCOUNT's equity (pdt_equity), not the desk's
+    # allocation; without it we assume the book is the account.
+    pdt_eq = pdt_equity if pdt_equity is not None else equity
+    if (day_trades_5d is not None and pdt_eq < limits.pdt_min_equity
             and day_trades_5d >= limits.max_day_trades_5d):
         return RiskVerdict(
             False,
             f"PDT guard: {day_trades_5d} day trades in 5 sessions with "
-            f"equity {equity:.0f} < {limits.pdt_min_equity:.0f} "
+            f"account equity {pdt_eq:.0f} < {limits.pdt_min_equity:.0f} "
             f"(cash account? raise max_day_trades_5d by hand)",
         )
 

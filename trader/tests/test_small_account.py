@@ -42,6 +42,25 @@ class TestPdtGuard(unittest.TestCase):
         self.assertTrue(check_order(account(10_000.0), "AAPL", "BUY", 5, 100.0,
                                     day_trades_5d=None).approved)
 
+    def test_allocation_inside_big_account_trades_freely(self):
+        # FINRA looks at the ACCOUNT: a $10k book inside a $30k account
+        # is not a PDT-restricted trader.
+        v = check_order(account(10_000.0), "AAPL", "BUY", 5, 100.0,
+                        day_trades_5d=10, pdt_equity=30_000.0)
+        self.assertTrue(v.approved)
+
+    def test_shrunken_account_re_arms_the_guard(self):
+        v = check_order(account(10_000.0), "AAPL", "BUY", 5, 100.0,
+                        day_trades_5d=3, pdt_equity=24_000.0)
+        self.assertFalse(v.approved)
+        self.assertIn("PDT guard", v.reason)
+
+    def test_unknown_account_equity_falls_back_conservative(self):
+        # pdt_equity None -> book equity decides, and a $10k book binds.
+        v = check_order(account(10_000.0), "AAPL", "BUY", 5, 100.0,
+                        day_trades_5d=3, pdt_equity=None)
+        self.assertFalse(v.approved)
+
     def test_limits_are_finra_numbers(self):
         limits = RiskLimits()
         self.assertEqual(limits.pdt_min_equity, 25_000.0)

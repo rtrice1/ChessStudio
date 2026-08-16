@@ -90,6 +90,9 @@ class SessionContext:
     # None = not tracked (sims); the live runner seeds it from the ledger
     # and execute() advances it on every closing fill.
     day_trades_5d: int | None = None
+    # The whole brokerage account's equity — what FINRA's PDT rule looks
+    # at when this desk trades an allocation smaller than the account.
+    pdt_equity: float | None = None
 
 
 def score_entry(ind: dict, news: dict | None = None,
@@ -419,7 +422,8 @@ def execute(decisions: list[Decision], snapshot: dict, ctx: SessionContext,
                               day_open_equity=ctx.day_open_equity, limits=ctx.limits,
                               trades_today=ctx.trades_today,
                               session_pct=ctx.session_pct,
-                              day_trades_5d=ctx.day_trades_5d)
+                              day_trades_5d=ctx.day_trades_5d,
+                              pdt_equity=ctx.pdt_equity)
         if not verdict:
             ledger.record("risk_reject", {"symbol": d.symbol, "action": d.action,
                                           "quantity": d.quantity, "reason": verdict.reason,

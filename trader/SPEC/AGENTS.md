@@ -141,16 +141,16 @@ No agent tier may modify `risk.py`, ledger history, the desk journal
   business days must hold ≥ $25,000 equity. Under that, the account gets
   frozen for 90 days. So real day trading means either ≥$25k in a margin
   account or a cash account instead.
-- **The $10k stake makes this concrete.** `risk.py` now enforces the
-  guard in code: below `pdt_min_equity` ($25k), entries stop once the
-  rolling 5-session day-trade count reaches `max_day_trades_5d` (3).
-  The live runner seeds the count from the ledger each morning and
-  every closing fill advances it; the dashboard shows the budget as a
-  meter whenever equity is under $25k. If the account is confirmed CASH
-  (no PDT rule), a human raises `max_day_trades_5d` by editing
-  `risk.py` — same rule as every other limit. **Recommendation: open
-  the $10k account as a cash account.** Three day trades a week is not
-  a day-trading desk; a cash account with T+1 options settlement is.
+- **The guard is in code either way.** `risk.py` blocks entries once
+  the rolling 5-session day-trade count reaches `max_day_trades_5d`
+  (3) whenever *account* equity is below `pdt_min_equity` ($25k). The
+  rule looks at the whole account, not the desk's allocation — the live
+  runner reads real account equity from Schwab and passes it, so a
+  $10k allocation inside a $25k+ account trades freely while the guard
+  stays armed against the account ever shrinking below the line. When
+  the real equity can't be read, the guard falls back to book equity —
+  the conservative direction. The dashboard shows the rolling count as
+  a meter whenever the book is under $25k.
 - **Cash account day trading** avoids PDT but proceeds settle T+1 —
   trading with unsettled funds triggers good-faith violations. The
   strategist must then treat settled cash, not cash, as the budget.

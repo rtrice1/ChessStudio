@@ -100,11 +100,21 @@ def main() -> int:
     # already in it, so the count covers 4 prior sessions + today's sells).
     ctx.day_trades_5d = day_trades_last_sessions(
         os.path.join(args.data_dir, "ledger.jsonl"), sessions=5)
-    print(f"SHADOW day | equity {start['equity']:.2f} | "
+    # FINRA's PDT rule looks at the whole account, not our allocation:
+    # the shadow book may be a $10k slice of a $25k+ account. Read the
+    # real account's equity when we can; the fallback (book equity) is
+    # the conservative direction.
+    try:
+        real_equity = float((data.account() or {}).get("equity") or 0.0)
+        ctx.pdt_equity = real_equity if real_equity > 0 else None
+    except Exception:
+        ctx.pdt_equity = None
+    print(f"SHADOW day | book {start['equity']:.2f} | "
+          f"account {ctx.pdt_equity or 'unknown'} | "
           f"instrument {ctx.plan.instrument} | plan: {ctx.plan.rationale[:80]}")
-    if float(start["equity"]) < ctx.limits.pdt_min_equity:
+    if (ctx.pdt_equity or float(start["equity"])) < ctx.limits.pdt_min_equity:
         budget = max(0, ctx.limits.max_day_trades_5d - ctx.day_trades_5d)
-        print(f"PDT guard | equity < {ctx.limits.pdt_min_equity:.0f}: "
+        print(f"PDT guard | account equity < {ctx.limits.pdt_min_equity:.0f}: "
               f"{ctx.day_trades_5d} day trades used in 5 sessions, "
               f"{budget} left (margin-account rule; cash accounts exempt)")
 
