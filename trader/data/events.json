@@ -1,0 +1,29 @@
+[
+  {
+    "ts": "2026-08-19T14:00:00",
+    "kind": "FOMC_minutes",
+    "symbol": null,
+    "blackout_before_min": 30,
+    "blackout_after_min": 30,
+    "flatten": false,
+    "_note": "July 28-29 meeting minutes, 14:00 ET (federalreserve.gov). Minutes move markets less than decisions: entries pause, no flatten."
+  },
+  {
+    "ts": "2026-08-21T10:00:00",
+    "kind": "UMich_sentiment",
+    "symbol": null,
+    "blackout_before_min": 10,
+    "blackout_after_min": 15,
+    "flatten": false,
+    "_note": "Preliminary August consumer sentiment, 10:00 ET. Minor mover."
+  },
+  {
+    "ts": "2026-08-28T10:00:00",
+    "kind": "JacksonHole_chair_speech",
+    "symbol": null,
+    "blackout_before_min": 45,
+    "blackout_after_min": 60,
+    "flatten": true,
+    "_note": "Jackson Hole 2026 runs Aug 27-29; new Fed chair Warsh's FIRST symposium speech, expected Friday morning. A new chair's first Jackson Hole is a regime event: flatten into it. VERIFY exact time when the agenda posts (kansascityfed.org)."
+  }
+]

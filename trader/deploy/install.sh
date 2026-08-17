@@ -51,7 +51,11 @@ systemctl enable --now trader-strategist-plan.timer \
 # The legal-edge feeds: overnight rumor scan + next-day backtrace, EDGAR 8-Ks.
 systemctl enable --now trader-rumors-scan.timer trader-rumors-grade.timer \
                        trader-edgar.timer
-# Seed the scheduled-event calendar template if absent (edit the dates!).
+# Event calendar: prefer the repo's real, dated calendar over the template.
+if [ -f "$SRC_DIR/data/events.json" ] && [ ! -f "$INSTALL_DIR/data/events.json" ]; then
+  cp "$SRC_DIR/data/events.json" "$INSTALL_DIR/data/"
+fi
+# Seed the scheduled-event calendar template only if still absent.
 (cd "$INSTALL_DIR" && python3 -m agent.events seed) || true
 
 # Seed the gut with simulated day-shape priors if it's empty.
