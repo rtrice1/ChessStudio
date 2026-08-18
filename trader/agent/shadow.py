@@ -181,8 +181,17 @@ class ShadowBroker:
         order_type: str = "MARKET",
         price: Optional[float] = None,
     ) -> dict:
-        """Place an order (filled locally, never sent to real API)."""
-        return self.engine.place_order(symbol, instruction, quantity, order_type, price)
+        """Place an order (filled locally, never sent to real API).
+
+        The book persists after EVERY fill, not just at close: a killed
+        process must not leave a stale book for the next session to
+        resurrect (2026-08-18: two mid-day restarts re-sold inventory the
+        killed session had already sold — phantom proceeds in the ledger)."""
+        result = self.engine.place_order(symbol, instruction, quantity,
+                                         order_type, price)
+        if result.get("status") == "FILLED":
+            self.save()
+        return result
 
     def list_orders(self) -> list:
         """List all orders."""

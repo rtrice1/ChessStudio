@@ -250,6 +250,23 @@ class TestShadowBroker(unittest.TestCase):
             # And equity prices the restored position, not just cash.
             self.assertGreater(snap2["equity"], snap2["cash"])
 
+    def test_book_persists_on_every_fill(self):
+        # A killed process must not leave a stale book behind (regression:
+        # 2026-08-18, mid-day restarts re-sold already-sold inventory).
+        with tempfile.TemporaryDirectory() as tmpdir:
+            book_path = f"{tmpdir}/book.json"
+            broker = ShadowBroker(self.client, ["AAPL"], starting_cash=50_000.0,
+                                  book_path=book_path)
+            broker.place_order("AAPL", "BUY", 10, order_type="MARKET")
+            # no explicit save() — the fill itself must have persisted
+            with open(book_path) as f:
+                saved = json.load(f)
+            self.assertEqual(saved["positions"]["AAPL"]["quantity"], 10)
+            broker.place_order("AAPL", "SELL", 10, order_type="MARKET")
+            with open(book_path) as f:
+                saved = json.load(f)
+            self.assertNotIn("positions", saved)   # flat book saves flat
+
     def test_list_orders(self):
         """Test listing orders."""
         self.broker.place_order("AAPL", "BUY", 10, order_type="MARKET")
