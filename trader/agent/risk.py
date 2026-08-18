@@ -10,11 +10,30 @@ import re
 from dataclasses import dataclass
 
 # OCC-style option symbol: ROOT + YYMMDD + C/P + strike*1000 (8 digits).
-_OCC_RE = re.compile(r"^[A-Z]{1,6}\d{6}[CP]\d{8}$")
+_OCC_RE = re.compile(r"^([A-Z]{1,6})\d{6}[CP]\d{8}$")
 
 
 def is_option(symbol: str) -> bool:
     return bool(_OCC_RE.match(symbol or ""))
+
+
+def underlying(symbol: str) -> str:
+    """The stock an exposure is really in: OCC option -> its root."""
+    m = _OCC_RE.match(symbol or "")
+    return m.group(1) if m else symbol
+
+
+# Correlated clusters (human-approved addition, 2026-08-17): most of the
+# watchlist is US megacap/index beta that moves together intraday —
+# holding several of these long at once is ONE bet taken several times,
+# and "0.5% risk per trade" quietly multiplies. Entries are capped at
+# max_correlated_positions distinct names per group (adds to a name
+# already held are unaffected, sells never blocked). Like every limit in
+# this file, the groups change only by a human editing them.
+CORRELATION_GROUPS: dict[str, frozenset] = {
+    "us_equity_beta": frozenset({"SPY", "QQQ", "AAPL", "MSFT", "NVDA",
+                                 "GOOGL", "AMZN", "TSLA"}),
+}
 
 
 @dataclass(frozen=True)
@@ -47,6 +66,8 @@ class RiskLimits:
     # like every limit in this file).
     pdt_min_equity: float = 25_000.0
     max_day_trades_5d: int = 3
+    # Max distinct names held per correlation group (see CORRELATION_GROUPS).
+    max_correlated_positions: int = 2
 
 
 @dataclass
@@ -161,6 +182,28 @@ def check_order(
                 False,
                 f"daily loss circuit breaker: down {drawdown:.2%} "
                 f">= {limits.daily_loss_halt_pct:.2%} from day open",
+            )
+
+    # Correlation cap: applies to shares AND options (an NVDA call is NVDA
+    # exposure). Counts DISTINCT other underlyings held in the same group,
+    # so adding to an existing position is never blocked by this.
+    und = underlying(symbol)
+    for group_name, members in CORRELATION_GROUPS.items():
+        if und not in members:
+            continue
+        held_in_group = {underlying(p.get("symbol", ""))
+                         for p in account.get("positions", [])
+                         if float(p.get("quantity", 0)) > 0
+                         and underlying(p.get("symbol", "")) in members}
+        held_in_group.discard(und)
+        if len(held_in_group) >= limits.max_correlated_positions:
+            return RiskVerdict(
+                False,
+                f"correlation cap: {symbol} joins group '{group_name}' "
+                f"already holding {sorted(held_in_group)} — "
+                f"max {limits.max_correlated_positions} correlated names, "
+                f"this would be one bet taken "
+                f"{len(held_in_group) + 1} times",
             )
 
     if notional > limits.max_order_pct * equity:

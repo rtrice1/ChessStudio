@@ -1,5 +1,23 @@
 [
   {
+    "ts": "2026-08-19T10:30:00",
+    "kind": "EIA_crude_inventories",
+    "symbol": "XOM",
+    "blackout_before_min": 10,
+    "blackout_after_min": 15,
+    "flatten": false,
+    "_note": "Weekly petroleum status report, every Wednesday 10:30 ET (eia.gov). Moves XOM; scoped to it."
+  },
+  {
+    "ts": "2026-08-19T13:00:00",
+    "kind": "Treasury_20y_auction",
+    "symbol": null,
+    "blackout_before_min": 5,
+    "blackout_after_min": 15,
+    "flatten": false,
+    "_note": "20-Year Bond auction Wed Aug 19 (verified: home.treasury.gov tentative schedule). Results ~13:01 ET move rates -> megacaps and JPM. Standard note/bond auction close is 13:00 ET per treasurydirect.gov."
+  },
+  {
     "ts": "2026-08-19T14:00:00",
     "kind": "FOMC_minutes",
     "symbol": null,
@@ -16,6 +34,33 @@
     "blackout_after_min": 15,
     "flatten": false,
     "_note": "Preliminary August consumer sentiment, 10:00 ET. Minor mover."
+  },
+  {
+    "ts": "2026-08-21T15:00:00",
+    "kind": "OPEX_monthly",
+    "symbol": null,
+    "blackout_before_min": 60,
+    "blackout_after_min": 60,
+    "flatten": false,
+    "_note": "Monthly options expiration, third Friday (Aug 21). Dealer hedging pins/whips prices into the close - fresh afternoon breakouts are suspect. Entries paused 14:00-16:00; exits unaffected; desk flattens 15:45 as always."
+  },
+  {
+    "ts": "2026-08-26T10:30:00",
+    "kind": "EIA_crude_inventories",
+    "symbol": "XOM",
+    "blackout_before_min": 10,
+    "blackout_after_min": 15,
+    "flatten": false,
+    "_note": "Weekly petroleum status report, Wednesday 10:30 ET."
+  },
+  {
+    "ts": "2026-08-26T16:20:00",
+    "kind": "NVDA_earnings",
+    "symbol": "NVDA",
+    "blackout_before_min": 120,
+    "blackout_after_min": 0,
+    "flatten": false,
+    "_note": "Q2 FY27 report after close Wed Aug 26 (verified: multiple earnings calendars; release ~16:20 ET, call 17:00 ET). NVDA entries blocked from 14:20 - no fresh NVDA risk into the print. Desk is flat by close regardless."
   },
   {
     "ts": "2026-08-28T10:00:00",

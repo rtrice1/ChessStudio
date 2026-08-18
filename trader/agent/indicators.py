@@ -131,6 +131,31 @@ def latest_day(candles: list[dict]) -> list[dict]:
     return result
 
 
+def prior_day_levels(candles: list[dict]) -> dict | None:
+    """High/low/close of the most recent COMPLETED day before the latest.
+
+    These are the levels every other day trader is watching: an opening
+    range breakout that also clears yesterday's high has open air above
+    it; one fired just below yesterday's high is running into the most
+    obvious resistance on the chart. None when history is single-day
+    (early sim days) — consumers must tolerate that."""
+    if not candles:
+        return None
+    latest_date = str(candles[-1].get("datetime", ""))[:10]
+    if not latest_date:
+        return None
+    prev = [c for c in candles
+            if str(c.get("datetime", ""))[:10] < latest_date
+            and c.get("datetime")]
+    if not prev:
+        return None
+    prev_date = str(prev[-1].get("datetime", ""))[:10]
+    day = [c for c in prev if str(c.get("datetime", ""))[:10] == prev_date]
+    return {"high": max(c.get("high", 0) for c in day),
+            "low": min(c.get("low", 0) for c in day),
+            "close": day[-1].get("close", 0)}
+
+
 def opening_range(candles: list[dict], bars: int = 6) -> dict | None:
     """Get high and low of the first N bars of the latest day."""
     day_candles = latest_day(candles)
@@ -513,6 +538,9 @@ def summarize(candles: list[dict]) -> dict:
             "bb_upper": None,
             "bb_lower": None,
             "rel_volume": None,
+            "prev_day_high": None,
+            "prev_day_low": None,
+            "prev_day_close": None,
         }
 
     closes = [c.get("close", 0) for c in candles]
@@ -578,6 +606,7 @@ def summarize(candles: list[dict]) -> dict:
     bb_lower = bb_val["lower"] if bb_val else None
 
     rel_volume = relative_volume(candles, 6)
+    prior = prior_day_levels(candles)
 
     return {
         "last_close": last_close,
@@ -608,4 +637,7 @@ def summarize(candles: list[dict]) -> dict:
         "bb_upper": bb_upper,
         "bb_lower": bb_lower,
         "rel_volume": rel_volume,
+        "prev_day_high": prior["high"] if prior else None,
+        "prev_day_low": prior["low"] if prior else None,
+        "prev_day_close": prior["close"] if prior else None,
     }

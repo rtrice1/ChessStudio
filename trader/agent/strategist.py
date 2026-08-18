@@ -62,6 +62,17 @@ class DayPlan:
     # and giving the middle back.
     take_inflection_exits: bool = True
     inflection_exit_atr: float = 1.0
+    # Exit style. "fixed": sell at target_atr (plus inflection exits).
+    # "trail": no fixed target — once price makes new highs, a stop
+    # ratchets to trail_atr ATRs below the high-water mark and the trade
+    # rides until it's hit. The initial stop_atr stop always applies (the
+    # trail can only raise the stop, never lower it), and the fixed
+    # target/inflection exits are OFF while trailing — they would cut the
+    # runner the trail exists to catch. Chop favors "fixed", trends favor
+    # "trail"; which earns money on which day type is a scoreboard
+    # question, so the default stays "fixed" until the ledger votes.
+    exit_style: str = "fixed"
+    trail_atr: float = 1.5
     # Premium spent per options entry, as a fraction of equity. This is the
     # full amount at risk — a 0DTE option can and does go to zero.
     premium_per_trade_pct: float = 0.01
@@ -93,6 +104,10 @@ class SessionContext:
     # The whole brokerage account's equity — what FINRA's PDT rule looks
     # at when this desk trades an allocation smaller than the account.
     pdt_equity: float | None = None
+    # High-water mark per held symbol since entry, for trail exits.
+    # decide() maintains it: raised on every cycle a position is held,
+    # dropped when the symbol is no longer held.
+    high_water: dict = field(default_factory=dict)
 
 
 def score_entry(ind: dict, news: dict | None = None,
@@ -175,6 +190,20 @@ def score_entry(ind: dict, news: dict | None = None,
         score += 0.25
         reasons.append(f"roc {roc10:+.1f}")
 
+    # Yesterday's levels: the resistance everyone else is watching. A
+    # breakout that has also cleared the prior-day high is in open air; one
+    # fired just beneath it is buying directly into the obvious wall.
+    prev_high = ind.get("prev_day_high")
+    last_close = ind.get("last_close")
+    atr14 = ind.get("atr14")
+    if prev_high and last_close:
+        if last_close > prev_high:
+            score += 0.5
+            reasons.append("clear of prior-day high")
+        elif atr14 and 0 <= prev_high - last_close <= 0.5 * atr14:
+            score -= 0.5
+            reasons.append("prior-day high overhead")
+
     # The second derivative: a breakout that's already decelerating is
     # being chased into its own inflection — the worst fill on the board.
     phase = ind.get("momentum_phase")
@@ -223,6 +252,8 @@ def decide(snapshot: dict, ctx: SessionContext) -> list[Decision]:
            max_positions names. Risk-based sizing:
            (per_trade_risk_pct * equity) / (entry - stop).
     Exit:  ATR stop, ATR target, or a close below VWAP (thesis failed).
+           With plan.exit_style == "trail": no fixed target — a ratchet
+           stop trails trail_atr ATRs under the high-water mark instead.
            Exits are never budgeted, ranked, or deferred.
     Late-session entries are refused by risk.py; the runner flattens at EOD.
     """
@@ -237,6 +268,10 @@ def decide(snapshot: dict, ctx: SessionContext) -> list[Decision]:
     candidates: list[tuple[float, Decision]] = []
     held_count = sum(1 for p in account.get("positions", [])
                      if int(p.get("quantity", 0)) > 0)
+    # A closed position's high-water mark must not leak into a re-entry.
+    for sym in list(ctx.high_water):
+        if int((positions.get(sym) or {}).get("quantity", 0)) <= 0:
+            del ctx.high_water[sym]
 
     for symbol, ind in indicators.items():
         quote = quotes.get(symbol) or {}
@@ -259,13 +294,27 @@ def decide(snapshot: dict, ctx: SessionContext) -> list[Decision]:
             stop = avg - plan.stop_atr * atr if atr else avg * 0.99
             target = avg + plan.target_atr * atr if atr else avg * 1.02
             qty = int(pos["quantity"])
+            trailing = plan.exit_style == "trail" and atr
+            trail_stop = None
+            if trailing:
+                high = max(ctx.high_water.get(symbol, avg), last)
+                ctx.high_water[symbol] = high
+                # Ratchet: the trail may only RAISE the stop above the
+                # initial one — never widen the original risk.
+                trail_stop = high - plan.trail_atr * atr
+                stop = max(stop, trail_stop)
             if last <= stop:
+                tag = ("trail stop" if trail_stop is not None
+                       and stop == trail_stop and trail_stop > avg
+                       else "ATR stop")
+                extra = (f" (high {ctx.high_water[symbol]:.2f})"
+                         if tag == "trail stop" else "")
                 decisions.append(Decision(symbol, "SELL", qty,
-                                          f"ATR stop: {last:.2f} <= {stop:.2f}"))
-            elif last >= target:
+                                          f"{tag}: {last:.2f} <= {stop:.2f}{extra}"))
+            elif not trailing and last >= target:
                 decisions.append(Decision(symbol, "SELL", qty,
                                           f"ATR target: {last:.2f} >= {target:.2f}"))
-            elif (plan.take_inflection_exits and atr
+            elif (not trailing and plan.take_inflection_exits and atr
                   and last >= avg + plan.inflection_exit_atr * atr
                   and ind.get("momentum_phase") == "exhausting"
                   and (ind.get("macd_hist_slope") or 0) < 0):

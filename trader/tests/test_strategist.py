@@ -46,6 +46,44 @@ class TestDayRiskRules(unittest.TestCase):
         limits = RiskLimits()
         self.assertEqual(limits.max_daily_trades, 40)
         self.assertLess(limits.entry_cutoff_session_pct, 1.0)
+        self.assertEqual(limits.max_correlated_positions, 2)
+
+
+class TestCorrelationCap(unittest.TestCase):
+    """One bet must not be taken four times: distinct names per correlated
+    cluster are capped (human-approved risk.py addition, 2026-08-17)."""
+
+    TWO_BETA = [{"symbol": "AAPL", "quantity": 10, "averagePrice": 150.0,
+                 "marketValue": 1500.0},
+                {"symbol": "QQQ", "quantity": 4, "averagePrice": 380.0,
+                 "marketValue": 1520.0}]
+
+    def test_third_correlated_name_blocked(self):
+        v = check_order(account(positions=self.TWO_BETA),
+                        "MSFT", "BUY", 2, 380.0)
+        self.assertFalse(v.approved)
+        self.assertIn("correlation cap", v.reason)
+
+    def test_adding_to_held_name_is_not_blocked(self):
+        v = check_order(account(positions=self.TWO_BETA),
+                        "AAPL", "BUY", 2, 150.0)
+        self.assertTrue(v.approved)
+
+    def test_uncorrelated_name_is_not_blocked(self):
+        v = check_order(account(positions=self.TWO_BETA),
+                        "XOM", "BUY", 10, 106.0)
+        self.assertTrue(v.approved)
+
+    def test_option_counts_as_underlying_exposure(self):
+        v = check_order(account(positions=self.TWO_BETA),
+                        "NVDA260821C00900000", "BUY", 1, 5.0)
+        self.assertFalse(v.approved)
+        self.assertIn("correlation cap", v.reason)
+
+    def test_sells_never_blocked_by_correlation(self):
+        v = check_order(account(positions=self.TWO_BETA),
+                        "QQQ", "SELL", 4, 380.0)
+        self.assertTrue(v.approved)
 
 
 # Same ORB breakout trigger, very different momentum quality.
@@ -87,6 +125,28 @@ class TestEntryScoring(unittest.TestCase):
         hunch = {"suspected_day_type": "chop", "confidence": 0.3, "based_on": 1}
         self.assertEqual(score_entry(IND_WEAK, hunch=hunch),
                          score_entry(IND_WEAK))
+
+    def test_clearing_prior_day_high_scores_up(self):
+        base, _ = score_entry(IND_STRONG)
+        clear, why = score_entry({**IND_STRONG, "last_close": 101.5,
+                                  "prev_day_high": 101.0})
+        self.assertGreater(clear, base)
+        self.assertIn("clear of prior-day high", why)
+
+    def test_prior_day_high_overhead_scores_down(self):
+        # breakout fired 0.2 below yesterday's high with ATR 1.0 — buying
+        # straight into the most obvious resistance on the chart
+        base, _ = score_entry(IND_STRONG)
+        wall, why = score_entry({**IND_STRONG, "last_close": 101.5,
+                                 "prev_day_high": 101.7})
+        self.assertLess(wall, base)
+        self.assertIn("prior-day high overhead", why)
+
+    def test_distant_prior_day_high_is_neutral(self):
+        base, _ = score_entry(IND_STRONG)
+        far, _ = score_entry({**IND_STRONG, "last_close": 101.5,
+                              "prev_day_high": 105.0})
+        self.assertEqual(far, base)
 
 
 class TestPositionBudget(unittest.TestCase):
@@ -208,6 +268,62 @@ class TestDayStrategist(unittest.TestCase):
         snap = snapshot(account(positions=pos), {"AAPL": QUOTE},
                         {"AAPL": IND_BREAKOUT})
         self.assertEqual(decide(snap, self.ctx()), [])
+
+    def test_trail_mode_skips_fixed_target(self):
+        # Fixed mode takes the target here (98 + 2.5*1.0 = 100.5 <= 101.5);
+        # trail mode holds and starts ratcheting instead.
+        pos = [{"symbol": "AAPL", "quantity": 100, "averagePrice": 98.0,
+                "marketValue": 10150.0}]
+        ctx = SessionContext(day_open_equity=100_000.0,
+                             plan=DayPlan(exit_style="trail"))
+        snap = snapshot(account(positions=pos), {"AAPL": QUOTE},
+                        {"AAPL": IND_BREAKOUT})
+        self.assertEqual(decide(snap, ctx), [])
+        self.assertEqual(ctx.high_water["AAPL"], 101.5)
+
+    def test_trail_ratchets_up_and_triggers_on_giveback(self):
+        pos = [{"symbol": "AAPL", "quantity": 100, "averagePrice": 98.0,
+                "marketValue": 10150.0}]
+        ctx = SessionContext(day_open_equity=100_000.0,
+                             plan=DayPlan(exit_style="trail"))
+        acct = account(positions=pos)
+        # new high 103 -> trail stop rises to 103 - 1.5*1.0 = 101.5
+        decide(snapshot(acct, {"AAPL": {**QUOTE, "last": 103.0}},
+                        {"AAPL": IND_BREAKOUT}), ctx)
+        self.assertEqual(ctx.high_water["AAPL"], 103.0)
+        # pullback to 101.4 <= 101.5 -> trail stop fires, profit kept
+        decisions = decide(snapshot(acct, {"AAPL": {**QUOTE, "last": 101.4}},
+                                    {"AAPL": IND_BREAKOUT}), ctx)
+        self.assertEqual(len(decisions), 1)
+        self.assertEqual((decisions[0].action, decisions[0].quantity),
+                         ("SELL", 100))
+        self.assertIn("trail stop", decisions[0].rationale)
+        self.assertIn("high 103.00", decisions[0].rationale)
+
+    def test_trail_never_widens_the_initial_stop(self):
+        # Underwater from entry: the initial ATR stop governs, labeled as such.
+        pos = [{"symbol": "AAPL", "quantity": 100, "averagePrice": 104.0,
+                "marketValue": 10150.0}]
+        ctx = SessionContext(day_open_equity=100_000.0,
+                             plan=DayPlan(exit_style="trail"))
+        decisions = decide(snapshot(account(positions=pos), {"AAPL": QUOTE},
+                                    {"AAPL": IND_BREAKOUT}), ctx)
+        self.assertEqual(len(decisions), 1)
+        self.assertIn("ATR stop", decisions[0].rationale)
+        self.assertNotIn("trail", decisions[0].rationale)
+
+    def test_high_water_forgotten_once_flat(self):
+        pos = [{"symbol": "AAPL", "quantity": 100, "averagePrice": 98.0,
+                "marketValue": 10150.0}]
+        ctx = SessionContext(day_open_equity=100_000.0,
+                             plan=DayPlan(exit_style="trail"))
+        decide(snapshot(account(positions=pos), {"AAPL": QUOTE},
+                        {"AAPL": IND_BREAKOUT}), ctx)
+        self.assertIn("AAPL", ctx.high_water)
+        # position gone (sold elsewhere): stale mark must not survive
+        decide(snapshot(account(), {"AAPL": {**QUOTE, "last": 100.0}},
+                        {"AAPL": {**IND_BREAKOUT, "range_high": 102.0}}), ctx)
+        self.assertNotIn("AAPL", ctx.high_water)
 
     def test_flatten_all(self):
         acct = account(positions=[

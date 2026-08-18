@@ -20,6 +20,7 @@ from agent.indicators import (
     obv,
     opening_range,
     pct_change,
+    prior_day_levels,
     relative_volume,
     roc,
     rsi,
@@ -383,6 +384,34 @@ class TestIntradayIndicators(unittest.TestCase):
         self.assertIn("atr14", result)
         self.assertIn("pct_change_1d", result)
         self.assertIn("pct_change_5d", result)
+
+
+class TestPriorDayLevels(unittest.TestCase):
+    """Yesterday's high/low/close — the levels the rest of the tape watches."""
+
+    TWO_DAYS = [
+        {"datetime": "2026-08-14T14:30:00Z", "high": 101.0, "low": 99.0,
+         "close": 100.0},
+        {"datetime": "2026-08-14T20:00:00Z", "high": 103.0, "low": 100.0,
+         "close": 102.5},
+        {"datetime": "2026-08-17T13:30:00Z", "high": 104.0, "low": 102.0,
+         "close": 103.0},
+    ]
+
+    def test_levels_come_from_the_completed_prior_day(self):
+        levels = prior_day_levels(self.TWO_DAYS)
+        self.assertEqual(levels, {"high": 103.0, "low": 99.0, "close": 102.5})
+
+    def test_single_day_history_yields_none(self):
+        self.assertIsNone(prior_day_levels(self.TWO_DAYS[2:]))
+        self.assertIsNone(prior_day_levels([]))
+
+    def test_summarize_carries_the_levels(self):
+        out = summarize(self.TWO_DAYS)
+        self.assertEqual(out["prev_day_high"], 103.0)
+        self.assertEqual(out["prev_day_low"], 99.0)
+        self.assertEqual(out["prev_day_close"], 102.5)
+        self.assertIn("prev_day_high", summarize([]))  # key present when empty
 
 
 class TestMomentumIndicators(unittest.TestCase):

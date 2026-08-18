@@ -59,6 +59,8 @@ def main() -> int:
     ap.add_argument("--desk-dir", default=os.path.join(os.path.dirname(__file__), "..", "desk_state"))
     ap.add_argument("--instrument", choices=["shares", "calls"], default="shares",
                     help="express breakout signals as stock or long 0DTE calls")
+    ap.add_argument("--exit-style", choices=["fixed", "trail"], default="fixed",
+                    help="fixed ATR target vs ratchet stop under the high-water mark")
     args = ap.parse_args()
 
     server = create_server(port=args.port, seed=args.seed,
@@ -74,8 +76,10 @@ def main() -> int:
     start = client.account()
     # The ledger persists across days; count this session's rejects only.
     rejects_at_open = ledger.summary()["kind_counts"].get("risk_reject", 0)
-    ctx = SessionContext(day_open_equity=float(start["equity"]),
-                         plan=DayPlan(instrument=args.instrument))
+    plan = DayPlan(instrument=args.instrument, exit_style=args.exit_style)
+    if args.exit_style == "trail":
+        plan.rationale += " | trail exits"
+    ctx = SessionContext(day_open_equity=float(start["equity"]), plan=plan)
     ledger.record("session_start", {"equity": start["equity"], "seed": args.seed,
                                     "plan": ctx.plan.rationale})
     print(f"day open  | equity {start['equity']:.2f} | plan: {ctx.plan.rationale}")
