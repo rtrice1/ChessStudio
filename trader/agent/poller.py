@@ -221,8 +221,19 @@ def poll_once(client: BrokerClient, symbols: list[str], data_dir: str) -> dict:
                 history = client.price_history(symbol, days=5, interval=5)
                 candles = history.get("candles", [])
                 indicators[symbol] = summarize(candles)
+                # Charts get 1-minute bars (we stream real-time quotes; the
+                # display should not be coarser than the desk's own eyes).
+                # The ENGINE's indicators stay on 5-minute bars above —
+                # changing the decision timeframe is a strategy decision,
+                # not a chart side effect. Falls back to the 5-min day if
+                # the source can't serve 1-minute.
+                try:
+                    day1 = latest_day(client.price_history(
+                        symbol, days=1, interval=1).get("candles", []))
+                except Exception:
+                    day1 = []
                 rows = []
-                for c in latest_day(candles):
+                for c in (day1 or latest_day(candles)):
                     try:
                         clock = datetime.fromisoformat(
                             str(c["datetime"])).astimezone(_ET).strftime("%H:%M")
