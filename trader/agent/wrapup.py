@@ -39,6 +39,121 @@ def _fmt_money(x: float) -> str:
     return f"{'+' if x > 0 else ''}{x:,.2f}"
 
 
+def _short_why(rationale: str) -> str:
+    """First segment of a fill rationale — the trigger, without the score
+    breakdown and slot details."""
+    return str(rationale or "").split(" | ")[0].strip()
+
+
+def _exit_reason(rationale: str) -> str:
+    head = str(rationale or "").split(":")[0].strip()
+    return head or "exit"
+
+
+def _when(e: dict):
+    try:
+        return datetime.fromisoformat(str(e.get("ts", "")).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _narrative_section(day: list[dict], fills: list[dict]) -> list[str]:
+    """The session as three acts. Events are bucketed by their position in
+    the session's own wall-clock span, so this reads correctly for both a
+    real 9:30-16:00 day and a compressed sim day."""
+    stamped = [(t, e) for e in day if (t := _when(e)) is not None]
+    if not stamped or not fills:
+        return []
+    t0 = min(t for t, _ in stamped)
+    span = (max(t for t, _ in stamped) - t0).total_seconds() or 1.0
+    acts: dict[str, list[dict]] = {"Morning": [], "Midday": [],
+                                   "Afternoon & close": []}
+    for t, e in sorted(stamped, key=lambda te: te[0]):
+        frac = (t - t0).total_seconds() / span
+        acts["Morning" if frac < 1 / 3 else
+             "Midday" if frac < 2 / 3 else "Afternoon & close"].append(e)
+
+    out = ["## The day, as it unfolded", ""]
+    cap_noted = False
+    for act, events in acts.items():
+        buys = [e for e in events
+                if e.get("kind") == "fill" and e.get("action") == "BUY"]
+        sells = [e for e in events
+                 if e.get("kind") == "fill" and e.get("action") != "BUY"]
+        notes = []
+        for e in events:
+            kind = e.get("kind")
+            if kind == "gut_check":
+                notes.append(f"gut check: \"{(e.get('hunch') or {}).get('note', '')}\"")
+            elif kind == "focus":
+                notes.append(f"focus shifted: {e.get('reason', '')}")
+            elif kind == "daily_stop":
+                notes.append(f"**DAILY STOP** — down "
+                             f"{float(e.get('drawdown') or 0) * 100:.2f}%, "
+                             "flattening everything")
+            elif (kind == "risk_reject" and not cap_noted
+                  and str(e.get("reason", "")).startswith("daily trade cap")):
+                notes.append("entry budget for the day ran out here — "
+                             "exits only from this point")
+                cap_noted = True
+        if not buys and not sells and not notes:
+            continue
+        out.append(f"**{act}**")
+        out += [f"- {n}" for n in notes[:3]]
+        if buys:
+            counts: dict[str, int] = {}
+            for b in buys:
+                counts[b.get("symbol", "?")] = counts.get(b.get("symbol", "?"), 0) + 1
+            roll = ", ".join(f"{s}×{n}" if n > 1 else s for s, n in
+                             sorted(counts.items(), key=lambda kv: -kv[1]))
+            out.append(f"- {len(buys)} entries ({roll}); e.g.:")
+            for b in buys[:2]:
+                px = (b.get("order") or {}).get("fillPrice")
+                at = f" @ {px:,.2f}" if px else ""
+                out.append(f"  - `{str(b.get('ts', ''))[11:19]}` "
+                           f"BUY {b.get('quantity')} {b.get('symbol')}{at} — "
+                           f"{_short_why(b.get('rationale'))}")
+        if sells:
+            reasons: dict[str, int] = {}
+            for s in sells:
+                r = _exit_reason(s.get("rationale"))
+                reasons[r] = reasons.get(r, 0) + 1
+            roll = ", ".join(f"{n}× {r}" for r, n in
+                             sorted(reasons.items(), key=lambda kv: -kv[1]))
+            out.append(f"- {len(sells)} exits: {roll}")
+        out.append("")
+    return out
+
+
+def _traded_section(fills: list[dict]) -> list[str]:
+    """Per-symbol turnover. P&L is sold-minus-bought, which equals realized
+    P&L because the desk ends every day flat."""
+    if not fills:
+        return []
+    per: dict[str, dict] = {}
+    for f in fills:
+        s = per.setdefault(f.get("symbol", "?"),
+                           {"buys": 0, "qty": 0.0, "bought": 0.0, "sold": 0.0})
+        qty = float(f.get("quantity") or 0)
+        px = float((f.get("order") or {}).get("fillPrice") or 0.0)
+        if f.get("action") == "BUY":
+            s["buys"] += 1
+            s["qty"] += qty
+            s["bought"] += qty * px
+        else:
+            s["sold"] += qty * px
+    out = ["## What was traded", "",
+           "| symbol | entries | shares | avg entry | bought $ | sold $ | P&L |",
+           "|---|---|---|---|---|---|---|"]
+    for sym, s in sorted(per.items(), key=lambda kv: -kv[1]["bought"]):
+        avg = s["bought"] / s["qty"] if s["qty"] else 0.0
+        out.append(f"| {sym} | {s['buys']} | {s['qty']:.0f} | {avg:,.2f} | "
+                   f"{s['bought']:,.0f} | {s['sold']:,.0f} | "
+                   f"{_fmt_money(s['sold'] - s['bought'])} |")
+    out.append("")
+    return out
+
+
 def compose(data_dir: str, desk_dir: str, date: str | None = None) -> str:
     """Assemble the wrap-up markdown for one session date."""
     date = date or datetime.now(ET).date().isoformat()
@@ -77,6 +192,10 @@ def compose(data_dir: str, desk_dir: str, date: str | None = None) -> str:
         lines.append(f"- Event blackout honored: {b.get('reason')}")
     if blackouts:
         lines.append("")
+
+    # --- the story, then the receipts ---
+    lines += _narrative_section(day, fills)
+    lines += _traded_section(fills)
 
     # --- what happened, graded by reasoning ---
     lines.append("## How it went")

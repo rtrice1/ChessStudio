@@ -5,8 +5,10 @@ import tempfile
 import threading
 import unittest
 import urllib.request
+from unittest import mock
 
 from agent.dashboard import StateAssembler, create_server
+from agent.schwab import SchwabError, TokenStore
 
 
 def write_json(path, obj):
@@ -71,6 +73,49 @@ class TestStateAssembler(unittest.TestCase):
         asm.assemble()  # same snapshot timestamp -> no duplicate point
         self.assertEqual(len(asm.equity_series), 1)
 
+    def test_holdings_carry_live_exit_levels(self):
+        write_json(os.path.join(self.data, "latest.json"), {
+            "timestamp": "2026-08-18T14:40:00",
+            "account": {"equity": 10_000.0, "positions": [
+                {"symbol": "AAPL", "quantity": 5, "averagePrice": 311.0},
+                {"symbol": "MSFT", "quantity": 0, "averagePrice": 0.0}]},
+            "indicators": {"AAPL": {"atr14": 0.8}}})
+        append_jsonl(os.path.join(self.data, "ledger.jsonl"), [
+            {"ts": "2026-08-18T14:00:00", "kind": "live_session_start"},
+            {"ts": "2026-08-18T14:39:09", "kind": "fill", "symbol": "AAPL",
+             "action": "BUY", "quantity": 2, "order": {"fillPrice": 311.11}}])
+        state = StateAssembler(self.data, self.desk).assemble()
+        self.assertEqual(len(state["holdings"]), 1)   # zero-qty excluded
+        h = state["holdings"][0]
+        # same arithmetic as decide(): avg ± plan multiples × ATR
+        self.assertAlmostEqual(h["stop"], 311.0 - 1.5 * 0.8)
+        self.assertAlmostEqual(h["target"], 311.0 + 2.5 * 0.8)
+        self.assertFalse(h["trail"])
+        self.assertEqual(state["session_fills"]["AAPL"],
+                         [["14:39:09", "BUY", 311.11]])
+
+    def test_candles_pass_through_to_state(self):
+        write_json(os.path.join(self.data, "latest.json"), {
+            "timestamp": "t1", "account": {"equity": 10_000.0},
+            "candles": {"AAPL": [["09:30", 310.0, 311.2, 309.8, 311.0, 120000],
+                                 ["09:35", 311.0, 311.5, 310.6, 310.9, 80000]]}})
+        state = StateAssembler(self.data, self.desk).assemble()
+        self.assertEqual(len(state["candles"]["AAPL"]), 2)
+        self.assertEqual(state["candles"]["AAPL"][0][0], "09:30")
+
+    def test_holdings_respect_trail_plan(self):
+        write_json(os.path.join(self.data, "day_plan.json"),
+                   {"exit_style": "trail", "stop_atr": 2.0})
+        write_json(os.path.join(self.data, "latest.json"), {
+            "timestamp": "t1",
+            "account": {"equity": 10_000.0, "positions": [
+                {"symbol": "XOM", "quantity": 10, "averagePrice": 164.0}]},
+            "indicators": {"XOM": {"atr14": 0.5}}})
+        h = StateAssembler(self.data, self.desk).assemble()["holdings"][0]
+        self.assertAlmostEqual(h["stop"], 164.0 - 2.0 * 0.5)
+        self.assertIsNone(h["target"])   # no fixed target while trailing
+        self.assertTrue(h["trail"])
+
     def test_halt_flag(self):
         open(os.path.join(self.data, "HALT"), "w").close()
         self.assertTrue(StateAssembler(self.data, self.desk).assemble()["halted"])
@@ -114,6 +159,8 @@ class TestHttpEndpoints(unittest.TestCase):
             page = urllib.request.urlopen(base + "/").read().decode()
             self.assertIn("EventSource", page)
             self.assertIn("THE DESK", page)
+            self.assertIn('id="modal"', page)     # wrap-up modal shell
+            self.assertIn('id="wrapbtn"', page)
 
             state = json.loads(urllib.request.urlopen(base + "/state").read())
             self.assertIn("account", state)
@@ -124,6 +171,90 @@ class TestHttpEndpoints(unittest.TestCase):
                 payload = json.loads(line[6:])
                 self.assertIn("positions", payload)
             server.shutdown()
+
+
+class TestSchwabAuthEndpoints(unittest.TestCase):
+    """The weekly OAuth ritual through the dashboard instead of the CLI."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        data = os.path.join(self.tmp.name, "d")
+        desk = os.path.join(self.tmp.name, "k")
+        os.makedirs(data)
+        os.makedirs(desk)
+        self.token_path = os.path.join(self.tmp.name, "tokens.json")
+        self.server = create_server(host="127.0.0.1", port=0, data_dir=data,
+                                    desk_dir=desk, interval=0.05)
+        self.base = f"http://127.0.0.1:{self.server.server_address[1]}"
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    def tearDown(self):
+        self.server.shutdown()
+        self.tmp.cleanup()
+
+    def _post(self, obj: dict) -> dict:
+        req = urllib.request.Request(
+            self.base + "/auth/schwab", data=json.dumps(obj).encode(),
+            headers={"Content-Type": "application/json"}, method="POST")
+        return json.loads(urllib.request.urlopen(req).read())
+
+    def test_page_has_auth_panel(self):
+        page = urllib.request.urlopen(self.base + "/").read().decode()
+        self.assertIn("Schwab connection", page)
+        self.assertIn("/auth/schwab", page)
+
+    def test_status_unconfigured(self):
+        with mock.patch.dict(os.environ, {
+                "SCHWAB_APP_KEY": "", "SCHWAB_APP_SECRET": "",
+                "SCHWAB_TOKEN_PATH": self.token_path}):
+            st = json.loads(
+                urllib.request.urlopen(self.base + "/auth/schwab").read())
+        self.assertFalse(st["configured"])
+        self.assertFalse(st["has_tokens"])
+        self.assertIsNone(st["authorize_url"])
+
+    def test_status_configured_shows_url_but_never_the_secret(self):
+        with mock.patch.dict(os.environ, {
+                "SCHWAB_APP_KEY": "KEY123", "SCHWAB_APP_SECRET": "SECRET456",
+                "SCHWAB_TOKEN_PATH": self.token_path}):
+            raw = urllib.request.urlopen(self.base + "/auth/schwab").read().decode()
+        st = json.loads(raw)
+        self.assertTrue(st["configured"])
+        self.assertIn("client_id=KEY123", st["authorize_url"])
+        self.assertNotIn("SECRET456", raw)
+
+    def test_exchange_rejects_paste_without_code(self):
+        with mock.patch.dict(os.environ, {
+                "SCHWAB_APP_KEY": "K", "SCHWAB_APP_SECRET": "S",
+                "SCHWAB_TOKEN_PATH": self.token_path}):
+            out = self._post({"redirect_url": "https://127.0.0.1/"})
+        self.assertFalse(out["ok"])
+        self.assertIn("no ?code=", out["error"])
+
+    def test_exchange_passes_decoded_code_to_the_store(self):
+        with mock.patch.dict(os.environ, {
+                "SCHWAB_APP_KEY": "K", "SCHWAB_APP_SECRET": "S",
+                "SCHWAB_TOKEN_PATH": self.token_path,
+                "SCHWAB_REDIRECT_URI": "https://127.0.0.1"}), \
+             mock.patch.object(TokenStore, "exchange_code",
+                               return_value={}) as exchanged:
+            out = self._post(
+                {"redirect_url": "https://127.0.0.1/?code=C0.abc%40"})
+        self.assertTrue(out["ok"])
+        exchanged.assert_called_once_with("C0.abc@", "https://127.0.0.1")
+
+    def test_exchange_failure_reports_schwab_error(self):
+        with mock.patch.dict(os.environ, {
+                "SCHWAB_APP_KEY": "K", "SCHWAB_APP_SECRET": "S",
+                "SCHWAB_TOKEN_PATH": self.token_path}), \
+             mock.patch.object(
+                 TokenStore, "exchange_code",
+                 side_effect=SchwabError("token request failed: HTTP 400 "
+                                         '{"error":"invalid_grant"}')):
+            out = self._post(
+                {"redirect_url": "https://127.0.0.1/?code=expired"})
+        self.assertFalse(out["ok"])
+        self.assertIn("invalid_grant", out["error"])
 
 
 if __name__ == "__main__":

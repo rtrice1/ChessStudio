@@ -3,3 +3,4 @@ desk_state/*
 !desk_state/identity.md
 __pycache__/
 *.pyc
+.venv/

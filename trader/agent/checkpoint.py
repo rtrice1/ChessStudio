@@ -97,9 +97,16 @@ def run(base: str) -> tuple[list[str], list[str]]:
     scan = latest_scan(os.path.join(desk, "rumors.jsonl"))
     target = for_date(datetime.now(ET))
     if scan and scan.get("for_date") == target:
-        ok.append(f"rumor scan for {target} done "
-                  f"({scan.get('posts_seen')} posts, "
-                  f"{len(scan.get('tickers') or {})} tickers)")
+        if scan.get("fetch_errors") and not scan.get("posts_seen"):
+            todo.append(f"rumor scan for {target} ran but ALL sources failed "
+                        f"({scan['fetch_errors']} fetch errors) — Reddit "
+                        "blocks unauthenticated JSON; set REDDIT_CLIENT_ID / "
+                        "REDDIT_CLIENT_SECRET (script app at "
+                        "reddit.com/prefs/apps) and rerun")
+        else:
+            ok.append(f"rumor scan for {target} done "
+                      f"({scan.get('posts_seen')} posts, "
+                      f"{len(scan.get('tickers') or {})} tickers)")
     else:
         todo.append(f"no rumor scan for {target} yet — python -m agent.rumors scan "
                     "(needs open internet; ~10s)")
@@ -122,7 +129,8 @@ def run(base: str) -> tuple[list[str], list[str]]:
             ok.append(f"Schwab tokens present ({age_days}d old) — "
                       "verify: python -m agent.schwab test")
     else:
-        todo.append("no Schwab tokens — python -m agent.schwab auth, "
+        todo.append("no Schwab tokens — python -m agent.schwab auth (or the "
+                    "Schwab connection panel on the dashboard), "
                     "then python -m agent.schwab test")
 
     # kill switch

@@ -74,6 +74,19 @@ class TestWrapup(unittest.TestCase):
         self.assertIn("Chop read was right", text)          # my own post-mortem
         self.assertIn("Risk gate rejections: 1", text)
 
+    def test_narrative_and_traded_table(self):
+        self.seed_day()
+        text = compose(self.data, self.desk, DATE)
+        self.assertIn("The day, as it unfolded", text)
+        self.assertIn("BUY 10 AAPL @ 100.00", text)
+        self.assertIn("ORB: x", text)            # the trigger...
+        self.assertNotIn("score +3.50", text.split("## How it went")[0])
+        # ...without the score tail leaking into the narrative line
+        self.assertIn("1× inflection exit", text)
+        self.assertIn("What was traded", text)
+        self.assertIn("| AAPL | 1 | 10 | 100.00 | 1,000 | 1,030 | +30.00 |",
+                      text)
+
     def test_wrong_gut_call_is_reported_wrong(self):
         self.seed_day()
         # rewrite journal with a different actual day type
@@ -93,7 +106,7 @@ class TestWrapup(unittest.TestCase):
     def test_write_persists_under_desk_state(self):
         self.seed_day()
         path = write(self.data, self.desk, DATE)
-        self.assertTrue(path.endswith(f"wrapups/{DATE}.md"))
+        self.assertTrue(path.replace(os.sep, "/").endswith(f"wrapups/{DATE}.md"))
         self.assertTrue(os.path.exists(path))
 
 

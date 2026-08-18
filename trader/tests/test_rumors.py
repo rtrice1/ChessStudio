@@ -1,14 +1,64 @@
 """Tests for the overnight rumor scanner and its next-day backtrace."""
+import io
 import json
 import os
 import tempfile
 import unittest
 from datetime import datetime
+from unittest import mock
 
-from agent.rumors import (ET, MockBoardSource, aggregate, calibration,
-                          context, extract_tickers, for_date, grade, scan)
+from agent.rumors import (ET, MockBoardSource, RedditSource, aggregate,
+                          calibration, context, extract_tickers, for_date,
+                          grade, scan)
 
 WATCH = ["AAPL", "TSLA", "NVDA", "SPY"]
+
+
+def _http_response(payload: dict):
+    """A context-manager stand-in for urlopen's response."""
+    resp = mock.MagicMock()
+    resp.read.return_value = json.dumps(payload).encode()
+    resp.__enter__ = lambda s: s
+    resp.__exit__ = mock.MagicMock(return_value=False)
+    return resp
+
+
+class TestRedditSourceAuthAndFailures(unittest.TestCase):
+    def test_unauthenticated_failures_are_counted_not_raised(self):
+        src = RedditSource(subreddits=["stocks", "options"])
+        with mock.patch.dict(os.environ, {"REDDIT_CLIENT_ID": "",
+                                          "REDDIT_CLIENT_SECRET": ""}), \
+             mock.patch("agent.rumors.urllib.request.urlopen",
+                        side_effect=OSError("403 blocked")):
+            posts = src.fetch(WATCH)
+        self.assertEqual(posts, [])
+        self.assertEqual(src.fetch_errors, 2)   # one per subreddit
+
+    def test_oauth_used_when_credentials_present(self):
+        src = RedditSource(subreddits=["stocks"])
+        calls = []
+
+        def fake_urlopen(req, timeout=None):
+            calls.append(req)
+            if "access_token" in req.full_url:
+                return _http_response({"access_token": "TOK123"})
+            return _http_response({"data": {"children": [
+                {"data": {"title": "$TSLA breakout", "selftext": "",
+                          "created_utc": 1755500000}}]}})
+
+        with mock.patch.dict(os.environ, {"REDDIT_CLIENT_ID": "cid",
+                                          "REDDIT_CLIENT_SECRET": "sec"}), \
+             mock.patch("agent.rumors.urllib.request.urlopen", fake_urlopen), \
+             mock.patch("agent.rumors.time.sleep"):
+            posts = src.fetch(WATCH)
+        self.assertEqual(src.fetch_errors, 0)
+        self.assertEqual(len(posts), 1)
+        self.assertEqual(posts[0]["tickers"], ["TSLA"])
+        token_req, listing_req = calls
+        self.assertIn("www.reddit.com/api/v1/access_token", token_req.full_url)
+        self.assertTrue(token_req.get_header("Authorization", "").startswith("Basic "))
+        self.assertIn("oauth.reddit.com/r/stocks/new", listing_req.full_url)
+        self.assertEqual(listing_req.get_header("Authorization"), "bearer TOK123")
 
 
 class TestTickerExtraction(unittest.TestCase):
@@ -78,6 +128,22 @@ class FakeClient:
 
     def news(self, symbols, limit=10):
         return {}
+
+
+class TestScanRecordsFetchErrors(unittest.TestCase):
+    def test_blocked_scan_is_distinguishable_from_quiet(self):
+        class DeadSource:
+            fetch_errors = 4
+
+            def fetch(self, watch):
+                return []
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "rumors.jsonl")
+            rec = scan([DeadSource()], WATCH, path,
+                       now=datetime(2026, 8, 17, 21, 30, tzinfo=ET))
+        self.assertEqual(rec["posts_seen"], 0)
+        self.assertEqual(rec["fetch_errors"], 4)
 
 
 class TestScanGradeCalibrate(unittest.TestCase):

@@ -28,6 +28,20 @@ export SCHWAB_APP_SECRET="your-app-secret"
 
 ## 3. One-time (well, weekly) authorization
 
+Two ways to do the same ritual; the dashboard is the comfortable one.
+
+**Web (preferred):** start the dashboard (`python -m agent.dashboard`),
+open http://127.0.0.1:8899/, find the **Schwab connection** panel. It
+shows token state and walks the flow: click "open Schwab login", log in
+with your **brokerage** credentials, approve the app, and when the
+browser dead-ends on `https://127.0.0.1/?code=...` copy that full URL
+into the panel's box and hit **exchange**. Move fast — authorization
+codes expire in ~30 seconds. The panel needs SCHWAB_APP_KEY/SECRET in
+the *dashboard's* environment (restart it after setting them). The app
+secret never leaves the server side; the browser only carries the code.
+
+**CLI:**
+
 ```bash
 cd trader && python -m agent.schwab auth
 ```
@@ -40,6 +54,12 @@ into the prompt. Tokens are saved to `data/schwab_tokens.json` (mode
 600). **Schwab expires refresh tokens after ~7 days** — this step is a
 weekly ritual, by their design. `python -m agent.schwab test` verifies
 data access and prints the token's age.
+
+If the browser hangs *during* Schwab's login/MFA (never reaches the
+127.0.0.1 page), the usual cause is the app not being **"Ready For
+Use"** yet — check its status on developer.schwab.com. If the exchange
+fails, the error now includes Schwab's own reason (expired code,
+redirect mismatch, app pending).
 
 ## 4. Monday's dry run
 

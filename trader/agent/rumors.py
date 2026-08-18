@@ -29,6 +29,7 @@ module has no write path at all.
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
 import re
@@ -63,27 +64,69 @@ def extract_tickers(text: str, watch: list[str]) -> set[str]:
 
 
 class RedditSource:
-    """Public JSON listings, one request per subreddit, properly identified.
+    """Subreddit listings, one request per subreddit, properly identified.
 
-    Reddit serves /r/<sub>/new.json without auth at modest rates; a nightly
-    scan of four subs is far inside polite use. Failures return [] — a dead
-    source must never break the scan."""
+    Reddit's post-2023 API policy refuses unauthenticated JSON from
+    scripts (verified 2026-08-17: 403 from www and api.reddit.com under
+    any User-Agent; old.reddit 200s but serves the HTML homepage).
+    Programmatic access wants a registered app: with REDDIT_CLIENT_ID and
+    REDDIT_CLIENT_SECRET in the env, this uses the application-only OAuth
+    grant against oauth.reddit.com (free tier, 100 req/min — a nightly
+    4-sub scan is far inside polite use). Without credentials it still
+    tries the public endpoint, which may work on other networks.
+
+    Failures return [] — a dead source must never break the scan — but
+    they are COUNTED in self.fetch_errors, so the scan record can tell
+    "the boards were quiet" from "the boards were unreachable"."""
 
     def __init__(self, subreddits: list[str] | None = None, limit: int = 100):
         self.subreddits = subreddits or DEFAULT_SUBREDDITS
         self.limit = limit
+        self.fetch_errors = 0
+        self._token: str | None = None
+
+    def _app_token(self) -> str | None:
+        """Application-only OAuth token, or None to go unauthenticated."""
+        cid = os.environ.get("REDDIT_CLIENT_ID", "")
+        secret = os.environ.get("REDDIT_CLIENT_SECRET", "")
+        if not cid or not secret:
+            return None
+        if self._token:
+            return self._token
+        auth = base64.b64encode(f"{cid}:{secret}".encode()).decode()
+        req = urllib.request.Request(
+            "https://www.reddit.com/api/v1/access_token",
+            data=b"grant_type=client_credentials",
+            headers={"User-Agent": USER_AGENT,
+                     "Authorization": f"Basic {auth}"},
+            method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                self._token = json.loads(resp.read().decode()).get("access_token")
+        except Exception:
+            self.fetch_errors += 1
+            self._token = None
+        return self._token
 
     def fetch(self, watch: list[str]) -> list[dict]:
         posts: list[dict] = []
+        token = self._app_token()
         for sub in self.subreddits:
-            url = (f"https://www.reddit.com/r/{sub}/new.json"
-                   f"?limit={self.limit}&raw_json=1")
+            if token:
+                url = (f"https://oauth.reddit.com/r/{sub}/new"
+                       f"?limit={self.limit}&raw_json=1")
+                headers = {"User-Agent": USER_AGENT,
+                           "Authorization": f"bearer {token}"}
+            else:
+                url = (f"https://www.reddit.com/r/{sub}/new.json"
+                       f"?limit={self.limit}&raw_json=1")
+                headers = {"User-Agent": USER_AGENT}
             try:
-                req = urllib.request.Request(url,
-                                             headers={"User-Agent": USER_AGENT})
+                req = urllib.request.Request(url, headers=headers)
                 with urllib.request.urlopen(req, timeout=15) as resp:
                     payload = json.load(resp)
             except Exception:
+                self.fetch_errors += 1
                 continue
             for child in (payload.get("data") or {}).get("children") or []:
                 d = child.get("data") or {}
@@ -110,11 +153,13 @@ class MockBoardSource:
 
     def __init__(self, client):
         self.client = client
+        self.fetch_errors = 0
 
     def fetch(self, watch: list[str]) -> list[dict]:
         try:
             news = self.client.news(watch, limit=20)
         except Exception:
+            self.fetch_errors += 1
             return []
         posts = []
         for sym, items in (news or {}).items():
@@ -164,11 +209,16 @@ def scan(sources: list, watch: list[str], path: str,
     posts: list[dict] = []
     for src in sources:
         posts.extend(src.fetch(watch))
+    # A zero-post scan with fetch errors is a BLOCKED scan, not a quiet
+    # night — the record must carry the difference (empty is information;
+    # ambiguous is poison).
+    fetch_errors = sum(getattr(src, "fetch_errors", 0) for src in sources)
     record = {
         "kind": "rumor_scan",
         "scanned_at": now.isoformat(),
         "for_date": for_date(now),
         "posts_seen": len(posts),
+        "fetch_errors": fetch_errors,
         "tickers": aggregate(posts),
     }
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
@@ -331,6 +381,10 @@ def main() -> int:
         rec = scan([src], watch, rumors_path)
         print(f"scan for {rec['for_date']}: {rec['posts_seen']} posts, "
               f"{len(rec['tickers'])} tickers with >= {MIN_MENTIONS} mentions")
+        if rec.get("fetch_errors"):
+            print(f"  WARNING: {rec['fetch_errors']} source fetch(es) FAILED — "
+                  "this scan may be blocked, not quiet. Reddit needs "
+                  "REDDIT_CLIENT_ID/REDDIT_CLIENT_SECRET (see RedditSource).")
         for sym, t in sorted(rec["tickers"].items(),
                              key=lambda kv: -kv[1]["mentions"]):
             print(f"  {sym:6} x{t['mentions']:<3} sentiment {t['sentiment']:+d}")

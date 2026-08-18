@@ -9,6 +9,11 @@ a *view*, it owns no state and can be killed and restarted freely.
 Panels: equity tiles + intraday equity line, positions, the live event
 feed (fills, rejects, gut checks, focus moves, daily stops), the day
 plan, hunch, beliefs, scoreboard, and the cost of judgment.
+
+One exception to "the dashboard owns no state": the Schwab connection
+panel runs the weekly OAuth ritual (GET/POST /auth/schwab) and writes
+tokens via TokenStore — the code exchange stays server-side with the
+app secret; the browser only ever carries the authorization code.
 """
 from __future__ import annotations
 
@@ -24,6 +29,8 @@ from agent.events import active_blackouts, load_events
 from agent.metrics import day_trades_last_sessions
 from agent.metrics import scoreboard as compute_scoreboard
 from agent.rumors import context as rumors_context
+from agent.schwab import (SchwabError, TokenStore, authorize_url,
+                          extract_code, redirect_uri)
 from agent.strategist import score_entry
 
 ET = ZoneInfo("America/New_York")
@@ -122,15 +129,56 @@ class StateAssembler:
         # sim days can share one calendar date, so scope to the last
         # session_start rather than the date, mirroring ctx.trades_today.
         session_ts = ""
+        session_mode = ""
         for e in ledger:
             if e.get("kind") in ("session_start", "live_session_start"):
                 session_ts = e.get("ts", "")
+                session_mode = e.get("mode") or ""
         fills_today = [e for e in ledger if e.get("kind") == "fill"
                        and e.get("action") == "BUY"
                        and (e.get("ts", "") >= session_ts if session_ts
                             else e.get("ts", "")[:10] == ts[:10])]
+        # Held positions with their LIVE exit levels — the same arithmetic
+        # decide() runs (avg ± plan multiples × current ATR), so the chart
+        # shows the actual lines the engine will act on this cycle.
+        plan = _read_json(os.path.join(self.data_dir, "day_plan.json")) or {}
+        stop_mult = float(plan.get("stop_atr") or 1.5)
+        target_mult = float(plan.get("target_atr") or 2.5)
+        trail_mode = plan.get("exit_style") == "trail"
+        holdings = []
+        for p in account.get("positions", []):
+            if int(p.get("quantity", 0)) <= 0:
+                continue
+            sym = p.get("symbol", "")
+            avg = float(p.get("averagePrice") or 0.0)
+            atr14 = (indicators.get(sym) or {}).get("atr14")
+            if avg and atr14:
+                stop, target = avg - stop_mult * atr14, avg + target_mult * atr14
+            elif avg:
+                stop, target = avg * 0.99, avg * 1.02   # decide()'s fallback
+            else:
+                continue
+            holdings.append({"symbol": sym, "quantity": int(p["quantity"]),
+                             "averagePrice": avg, "stop": stop,
+                             # trail mode has no fixed target; the ratchet
+                             # level lives in the runner's ctx, not on disk
+                             "target": None if trail_mode else target,
+                             "trail": trail_mode})
+        session_fills: dict[str, list] = {}
+        for e in ledger:
+            if e.get("kind") != "fill":
+                continue
+            fts = e.get("ts", "")
+            if session_ts and fts < session_ts:
+                continue
+            px = (e.get("order") or {}).get("fillPrice")
+            if px is None:
+                continue
+            session_fills.setdefault(e.get("symbol", "?"), []).append(
+                [fts[11:19], e.get("action"), float(px)])
         return {
             "ts": time.time(),
+            "mode": session_mode,
             "account": account,
             "alerts": (latest.get("alerts") or [])[-8:],
             "positions": [p for p in account.get("positions", [])
@@ -143,7 +191,10 @@ class StateAssembler:
             "news_summary": news_summary,
             "entry_scores": entry_scores,
             "events": list(reversed(events)),
-            "plan": _read_json(os.path.join(self.data_dir, "day_plan.json")),
+            "holdings": holdings,
+            "candles": latest.get("candles") or {},
+            "session_fills": session_fills,
+            "plan": plan or None,
             "halted": os.path.exists(os.path.join(self.data_dir, "HALT")),
             "journal": list(reversed(journal[-5:])),
             "daily_pnl": [{"date": d.get("ts", "")[:10],
@@ -178,7 +229,7 @@ class StateAssembler:
             return None
         try:
             with open(os.path.join(d, files[-1]), encoding="utf-8") as f:
-                return {"date": files[-1][:-3], "text": f.read()[:4000]}
+                return {"date": files[-1][:-3], "text": f.read()[:20000]}
         except OSError:
             return None
 
@@ -223,9 +274,20 @@ small{color:var(--muted)}
 .badge{display:inline-block;padding:0 5px;border:1px solid var(--line);border-radius:4px;font-size:10px;color:var(--ink2);margin-left:3px}
 #tip{position:fixed;display:none;background:#000c;border:1px solid var(--line);border-radius:5px;padding:4px 8px;font-size:11px;color:var(--ink);pointer-events:none;z-index:9}
 .chip{display:inline-block;background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:4px 9px;font-size:12px;color:var(--ink2);margin-right:6px}
+.modal{display:none;position:fixed;inset:0;background:#000a;z-index:20;padding:4vh 4vw}
+.modal.open{display:flex}
+.mbox{background:var(--panel);border:1px solid var(--line);border-radius:10px;margin:auto;max-width:860px;width:100%;max-height:90vh;display:flex;flex-direction:column}
+.mhead{display:flex;justify-content:space-between;align-items:center;padding:10px 14px;border-bottom:1px solid var(--line);color:var(--ink)}
+.mclose{cursor:pointer;color:var(--muted);font-size:16px;padding:0 4px}
+.mclose:hover{color:var(--ink)}
+.mbox pre{padding:14px;overflow-y:auto;white-space:pre-wrap;font:12.5px/1.5 ui-monospace,Menlo,monospace;color:var(--ink2);margin:0}
 </style></head><body>
 <h1>THE DESK <span class="dot" id="dot">●</span> <small id="mode"></small></h1>
 <div id="tip"></div>
+<div class="modal" id="modal"><div class="mbox">
+  <div class="mhead"><b id="mtitle"></b><span class="mclose" id="mclose">✕</span></div>
+  <pre id="mbody"></pre>
+</div></div>
 <div class="halt" id="halt">⛔ HALT file present — all trading stopped</div>
 <div class="tiles" id="tiles"></div>
 <div style="margin-bottom:10px" id="chips"></div>
@@ -240,6 +302,17 @@ small{color:var(--muted)}
       <span style="color:#4a94e8;opacity:.35">▮</span> bollinger(20,2)&ensp;
       <span style="color:#656d76">┄</span> opening range</div>
     <div class="minis" id="minis"></div></div>
+  <div class="panel wide"><h2>Holdings — live exits</h2>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:6px">
+      <span style="color:#3fb950">▮</span>/<span style="color:#f85149">▮</span> 5-min candles + volume&ensp;
+      <span style="color:#bd8b1e">—</span> vwap&ensp;
+      <span style="color:#4a94e8;opacity:.4">▮</span> opening range&ensp;
+      <span style="color:#656d76">┄</span> prior-day H/L&ensp;
+      <span style="color:#f85149">┄</span> stop&ensp;
+      <span style="color:#3fb950">┄</span> target&ensp;
+      <span style="color:#9198a1">┄</span> avg&ensp;
+      <span style="color:#3fb950">▲</span>/<span style="color:#f85149">▼</span> fills (hover anything)</div>
+    <div id="holdings">—</div></div>
   <div class="panel"><h2>Daily P&amp;L (%)</h2><svg id="dailypnl" width="100%" height="120" viewBox="0 0 600 120"></svg></div>
   <div class="panel"><h2>Positions</h2><table id="positions"></table></div>
   <div class="panel"><h2>Live feed</h2><div class="feed" id="feed"></div></div>
@@ -247,8 +320,9 @@ small{color:var(--muted)}
   <div class="panel"><h2>Overnight rumors &amp; filings</h2><div id="rumors" style="font-size:12.5px;color:var(--ink2)">—</div></div>
   <div class="panel"><h2>Scoreboard</h2><table id="score"></table></div>
   <div class="panel"><h2>What worked — reasoning vs results</h2><div id="whatworked" style="font-size:12.5px;color:var(--ink2)">—</div></div>
-  <div class="panel"><h2>Daily wrap-up</h2><pre id="wrapup" style="font-size:12px;color:var(--ink2);white-space:pre-wrap;max-height:340px;overflow-y:auto">—</pre></div>
+  <div class="panel"><h2 id="wrapbtn" style="cursor:pointer">Daily wrap-up <span style="float:right;color:var(--accent);text-transform:none">open ⤢</span></h2><pre id="wrapup" style="font-size:12px;color:var(--ink2);white-space:pre-wrap;max-height:340px;overflow-y:auto">—</pre></div>
   <div class="panel"><h2>Desk beliefs</h2><div id="beliefs" style="font-size:12.5px;color:var(--ink2)"></div></div>
+  <div class="panel"><h2>Schwab connection</h2><div id="schwab" style="font-size:12.5px;color:var(--ink2)">—</div></div>
 </div>
 <script>
 const $=id=>document.getElementById(id);
@@ -406,8 +480,11 @@ function meters(s){
     ["drawdown",(dd*100).toFixed(2)+"%",2,dd*100/2],
     ["gross exposure",eq?(gross/eq*100).toFixed(0)+"%":"0%",100,eq?gross/eq:0],
     ["option premium",eq?(optPrem/eq*100).toFixed(1)+"%":"0%",6,eq?optPrem/eq*100/6:0]];
-  // The FINRA PDT budget only binds below $25k equity (margin accounts).
-  if(eq&&eq<25000)rows.push(["day trades (5d, PDT)",s.day_trades_5d||0,3,""]);
+  // The FINRA PDT budget binds on the ACCOUNT's equity. In shadow mode
+  // the book is a slice of a bigger real account (the engine checks the
+  // real equity), so the meter would lie here — hide it.
+  if(eq&&eq<25000&&s.mode!=="shadow")
+    rows.push(["day trades (5d, PDT)",s.day_trades_5d||0,3,""]);
   $("meters").innerHTML=rows.map(([k,v,cap,frac])=>{
     const f=typeof frac==="number"?Math.min(1,frac):Math.min(1,(v||0)/cap);
     return `<div class="meter"><div class="lbl"><span>${k}</span><span>${v} / cap ${cap}${typeof v==="string"&&v.includes("%")?"%":""}</span></div>`+
@@ -437,6 +514,114 @@ function chips(s){
     `<span class="chip">instrument: ${(p&&p.instrument)||"shares"}</span>`+
     `<span class="chip">book: ${(s.positions||[]).length}/${(p&&p.max_positions)||4} slots</span>`+
     `<span class="chip">trades: ${s.trades_today||0}/40</span>`;
+}
+// Quant chart per held position: today's 5-min OHLCV candles + volume
+// pane, session VWAP, opening range band, prior-day levels, the engine's
+// ACTUAL exit levels (recomputed each cycle), and this session's fills.
+// Falls back to the tick line while candles are absent (e.g. first poll).
+function quantChart(h,candles,fills,ind,tickSeries,cw){
+  // Rendered at the panel's real pixel width — no viewBox stretching, so
+  // candles stay candle-shaped and text stays readable at any size.
+  const W=Math.max(560,cw||900),H=230,top=12,volH=40,bot=16,R=64,L=6;
+  const plotH=H-top-volH-bot;
+  const useCandles=candles&&candles.length>1;
+  if(!useCandles&&(!tickSeries||tickSeries.length<2))
+    return `<div style="color:var(--ink2)">${h.symbol}: waiting for data…</div>`;
+  const n=useCandles?candles.length:tickSeries.length;
+  const highs=useCandles?candles.map(c=>c[2]):tickSeries.map(p=>p[1]);
+  const lows=useCandles?candles.map(c=>c[3]):tickSeries.map(p=>p[1]);
+  const vals=highs.concat(lows,[h.stop,h.averagePrice]);
+  if(h.target!=null)vals.push(h.target);
+  if(ind.prev_day_high!=null)vals.push(ind.prev_day_high);
+  if(ind.prev_day_low!=null)vals.push(ind.prev_day_low);
+  const min=Math.min(...vals),max=Math.max(...vals),pad=(max-min)||1;
+  const X=i=>L+(i+0.5)/n*(W-R-L);
+  const Y=v=>(top+plotH)-((v-min)/pad)*plotH;
+  const bw=Math.max(1.5,Math.min(7,(W-R-L)/n*0.65));
+  let out="";
+  // All right-margin labels are collected and de-collided at the end —
+  // stacked labels (stop/avg/tgt near each other) shift apart vertically
+  // instead of overprinting. Lines stay at their true y.
+  const labels=[];
+  // price gridlines
+  for(let g=0;g<=3;g++){
+    const v=min+pad*g/3,y=Y(v).toFixed(1);
+    out+=`<line x1="${L}" y1="${y}" x2="${W-R}" y2="${y}" stroke="#21262d" stroke-width="0.7"/>`;
+    labels.push([+y,"#656d76",fmt(v)]);
+  }
+  // opening range band
+  if(ind.range_high!=null&&ind.range_low!=null){
+    const y1=Y(ind.range_high),y2=Y(ind.range_low);
+    out+=`<rect x="${L}" y="${y1.toFixed(1)}" width="${W-R-L}" height="${Math.max(1,y2-y1).toFixed(1)}" fill="#4a94e8" opacity="0.06"/>`;
+  }
+  // prior-day levels
+  const lvl=(v,color,label,dash)=>{
+    if(v==null)return "";
+    labels.push([Y(v),color,`${label} ${fmt(v)}`]);
+    return `<line x1="${L}" y1="${Y(v).toFixed(1)}" x2="${W-R}" y2="${Y(v).toFixed(1)}" stroke="${color}" stroke-dasharray="${dash}" stroke-width="1"/>`;
+  };
+  out+=lvl(ind.prev_day_high,"#656d76","yH","2,3")+lvl(ind.prev_day_low,"#656d76","yL","2,3");
+  if(useCandles){
+    // time axis: hourly ticks
+    candles.forEach((c,i)=>{if(c[0].endsWith(":00")&&+c[0].slice(3)===0)
+      out+=`<text x="${X(i).toFixed(1)}" y="${H-3}" text-anchor="middle" style="fill:#656d76">${c[0]}</text>`;});
+    // volume pane
+    const vmax=Math.max(...candles.map(c=>c[5]||0),1);
+    candles.forEach((c,i)=>{
+      const up=c[4]>=c[1],vh=(c[5]||0)/vmax*(volH-4);
+      out+=`<rect x="${(X(i)-bw/2).toFixed(1)}" y="${(H-bot-vh).toFixed(1)}" width="${bw.toFixed(1)}" height="${vh.toFixed(1)}" fill="${up?"#3fb950":"#f85149"}" opacity="0.35"/>`;});
+    // session VWAP from the candles themselves
+    let pv=0,vv=0;
+    const vw=candles.map((c,i)=>{const tp=(c[2]+c[3]+c[4])/3;pv+=tp*(c[5]||0);vv+=(c[5]||0);
+      return vv?`${i?"L":"M"}${X(i).toFixed(1)},${Y(pv/vv).toFixed(1)}`:"";}).join("");
+    if(vw)out+=`<path d="${vw}" fill="none" stroke="#bd8b1e" stroke-width="1.1"/>`;
+    // candlesticks
+    candles.forEach((c,i)=>{
+      const[,o,hi,lo,cl]=c,up=cl>=o,color=up?"#3fb950":"#f85149",x=X(i);
+      out+=`<line x1="${x.toFixed(1)}" y1="${Y(hi).toFixed(1)}" x2="${x.toFixed(1)}" y2="${Y(lo).toFixed(1)}" stroke="${color}" stroke-width="1"/>`+
+        `<rect x="${(x-bw/2).toFixed(1)}" y="${Y(Math.max(o,cl)).toFixed(1)}" width="${bw.toFixed(1)}" height="${Math.max(0.8,Math.abs(Y(o)-Y(cl))).toFixed(1)}" fill="${color}"><title>${c[0]}  O ${fmt(o)} H ${fmt(hi)} L ${fmt(lo)} C ${fmt(cl)}  vol ${Number(c[5]).toLocaleString()}</title></rect>`;});
+  }else{
+    out+=`<path d="${tickSeries.map((p,i)=>`${i?"L":"M"}${X(i).toFixed(1)},${Y(p[1]).toFixed(1)}`).join("")}" fill="none" stroke="#4a94e8" stroke-width="1.5"/>`;
+  }
+  // engine exit levels on top
+  out+=lvl(h.stop,"#f85149","stop","5,3")+lvl(h.target,"#3fb950","tgt","5,3")+
+    lvl(h.averagePrice,"#9198a1","avg","1,2");
+  // fills: match HH:MM:SS to candle HH:MM (or tick clock)
+  (fills||[]).forEach(([t,action,px])=>{
+    let i;
+    if(useCandles){const hm=t.slice(0,5);i=candles.findIndex(c=>c[0]>=hm);}
+    else i=tickSeries.findIndex(p=>p[0]>=t);
+    if(i<0)i=n-1;
+    const x=X(i),y=Y(px);
+    out+=action==="BUY"
+      ?`<path d="M${(x-5).toFixed(1)},${(y+7).toFixed(1)} L${(x+5).toFixed(1)},${(y+7).toFixed(1)} L${x.toFixed(1)},${(y-2).toFixed(1)} Z" fill="#3fb950" stroke="#0d1117" stroke-width="0.7"><title>BUY @ ${fmt(px)} — ${t}</title></path>`
+      :`<path d="M${(x-5).toFixed(1)},${(y-7).toFixed(1)} L${(x+5).toFixed(1)},${(y-7).toFixed(1)} L${x.toFixed(1)},${(y+2).toFixed(1)} Z" fill="#f85149" stroke="#0d1117" stroke-width="0.7"><title>SELL @ ${fmt(px)} — ${t}</title></path>`;});
+  // de-collide right-margin labels: sort by y, push overlaps down 11px
+  labels.sort((a,b)=>a[0]-b[0]);
+  for(let i=1;i<labels.length;i++)
+    if(labels[i][0]-labels[i-1][0]<11)labels[i][0]=labels[i-1][0]+11;
+  out+=labels.map(([y,color,txt])=>
+    `<text x="${W-R+4}" y="${(y+3.5).toFixed(1)}" style="fill:${color}">${txt}</text>`).join("");
+  return `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" style="max-width:100%">${out}</svg>`;
+}
+function holdingCharts(s){
+  const box=$("holdings"),hs=s.holdings||[];
+  if(!hs.length){box.innerHTML='<div style="color:var(--ink2)">flat — no open positions</div>';return}
+  const cw=box.clientWidth||900;
+  box.innerHTML=hs.map(h=>{
+    const ind=(s.indicators||{})[h.symbol]||{};
+    const series=(s.price_series||{})[h.symbol]||[];
+    const last=series.length?series[series.length-1][1]
+      :((s.candles||{})[h.symbol]||[]).length?(s.candles[h.symbol].slice(-1)[0][4]):h.averagePrice;
+    const upl=(last-h.averagePrice)*h.quantity;
+    return `<div style="margin-bottom:12px">`+
+      `<div style="display:flex;justify-content:space-between;font-size:12.5px;color:var(--ink2);margin-bottom:2px">`+
+      `<span><b style="color:var(--ink)">${h.symbol}</b> ${h.quantity} @ ${fmt(h.averagePrice)}`+
+      `${h.trail?' <span class="badge">trailing</span>':''} <small>last ${fmt(last)}</small></span>`+
+      `<span class="${cls(upl)}">${sign(upl)}${fmt(upl)}</span></div>`+
+      quantChart(h,(s.candles||{})[h.symbol],(s.session_fills||{})[h.symbol],ind,series,cw)+
+      `</div>`;
+  }).join("");
 }
 function positions(s){
   const rows=(s.positions||[]).map(p=>`<tr><td>${p.symbol}</td><td class="num">${p.quantity}</td>`+
@@ -516,13 +701,73 @@ function whatworked(s){
 function beliefs(s){
   $("beliefs").innerHTML=Object.entries(s.beliefs||{}).map(([k,v])=>`<div>• <b>${k}</b>: ${String(v).slice(0,120)}</div>`).join("")||"—";
 }
+let wrapupFull=null;
 function wrapup(s){
+  wrapupFull=s.wrapup||null;
   $("wrapup").textContent=s.wrapup?s.wrapup.text:"— no wrap-up written yet —";
+  // If the modal is open, keep it live as the wrap-up regenerates.
+  if($("modal").classList.contains("open")&&wrapupFull)
+    $("mbody").textContent=wrapupFull.text;
 }
+$("wrapbtn").onclick=()=>{
+  if(!wrapupFull)return;
+  $("mtitle").textContent="Desk wrap-up — "+wrapupFull.date;
+  $("mbody").textContent=wrapupFull.text;
+  $("modal").classList.add("open");
+};
+$("mclose").onclick=()=>$("modal").classList.remove("open");
+$("modal").onclick=e=>{if(e.target.id==="modal")$("modal").classList.remove("open")};
+document.addEventListener("keydown",e=>{
+  if(e.key==="Escape")$("modal").classList.remove("open")});
+// Schwab weekly ritual, web edition: link out, log in, paste the dead
+// 127.0.0.1 URL back here. The code exchange happens server-side.
+async function schwabPanel(){
+  const box=$("schwab");
+  // Don't repaint over a paste in progress.
+  const inp=document.getElementById("sw_url");
+  if(inp&&(inp.value||document.activeElement===inp))return;
+  let st;
+  try{st=await(await fetch("/auth/schwab")).json()}
+  catch(e){box.textContent="status unavailable: "+e.message;return}
+  if(!st.configured){
+    box.textContent="SCHWAB_APP_KEY / SCHWAB_APP_SECRET not set in the dashboard's environment — see deploy/SCHWAB.md, then restart the dashboard.";
+    return;
+  }
+  const age=st.refresh_age_days;
+  const tok=st.has_tokens
+    ?`tokens on disk — refresh token <span class="${age>=6?"neg":"pos"}">${age==null?"?":age.toFixed(1)}d</span> old (Schwab expires at ~7d)`
+    :`<span class="neg">no tokens — authorize below</span>`;
+  box.innerHTML=`<div>${tok}</div>`+
+    `<div style="margin-top:8px"><a class="chip" href="${st.authorize_url}" target="_blank" rel="noopener">1. open Schwab login ↗</a></div>`+
+    `<div style="margin-top:6px"><small>2. log in with BROKERAGE credentials, approve; the browser dead-ends on https://127.0.0.1/?code=… — copy that full URL here (fast: codes die in ~30s):</small></div>`+
+    `<div style="margin-top:6px;display:flex;gap:6px">`+
+    `<input id="sw_url" placeholder="https://127.0.0.1/?code=..." autocomplete="off" style="flex:1;background:var(--bg);border:1px solid var(--line);border-radius:6px;color:var(--ink);font:12px ui-monospace,monospace;padding:6px 8px">`+
+    `<button id="sw_go" style="background:var(--bg);border:1px solid var(--accent);border-radius:6px;color:var(--accent);font:12px ui-monospace,monospace;padding:6px 12px;cursor:pointer">exchange</button></div>`+
+    `<div id="sw_msg" style="margin-top:6px;font-size:12px"></div>`;
+  $("sw_go").onclick=async()=>{
+    const msg=$("sw_msg");
+    msg.textContent="exchanging…";
+    try{
+      const r=await(await fetch("/auth/schwab",{method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({redirect_url:$("sw_url").value})})).json();
+      if(r.ok){
+        msg.innerHTML='<span class="pos">✓ tokens saved — weekly ritual done</span>';
+        $("sw_url").value="";
+        setTimeout(schwabPanel,1500);
+      }else{
+        msg.textContent="✗ "+(r.error||"exchange failed");
+        msg.className="neg";
+      }
+    }catch(e){msg.textContent="✗ "+e.message;msg.className="neg";}
+  };
+}
+schwabPanel();setInterval(schwabPanel,60000);
 // One broken panel must never blank the whole desk: each renders inside
 // its own try/catch, and any failure lands visibly in the tab title.
 const PANELS=[["tiles",tiles],["chips",chips],["spark",s=>spark(s.equity_series)],
   ["minis",minis],["signals",signals],["meters",meters],["dailyPnl",dailyPnl],
+  ["holdings",holdingCharts],
   ["positions",positions],["feed",feed],["plan",plan],["rumors",rumors],
   ["score",score],["whatworked",whatworked],["beliefs",beliefs],
   ["wrapup",wrapup]];
@@ -543,6 +788,45 @@ def make_handler(assembler: StateAssembler, interval: float):
         def log_message(self, *a):  # quiet
             pass
 
+        def _json(self, obj: dict, status: int = 200) -> None:
+            body = json.dumps(obj).encode()
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_POST(self):
+            if self.path != "/auth/schwab":
+                self.send_error(404)
+                return
+            # The weekly OAuth ritual, from the browser: body carries the
+            # pasted redirect URL; the code is exchanged server-side, where
+            # the app secret lives. Nothing secret goes back out.
+            length = int(self.headers.get("Content-Length") or 0)
+            try:
+                payload = json.loads(self.rfile.read(length).decode() or "{}")
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                payload = {}
+            code = extract_code(str(payload.get("redirect_url") or ""))
+            if not code:
+                self._json({"ok": False,
+                            "error": "no ?code= found — paste the FULL "
+                                     "address-bar URL"})
+                return
+            store = TokenStore()
+            if not store.app_key or not store.app_secret:
+                self._json({"ok": False,
+                            "error": "SCHWAB_APP_KEY/SECRET not set in the "
+                                     "dashboard's environment"})
+                return
+            try:
+                store.exchange_code(code, redirect_uri())
+            except SchwabError as e:
+                self._json({"ok": False, "error": str(e)})
+                return
+            self._json({"ok": True, **store.status()})
+
         def do_GET(self):
             if self.path == "/":
                 body = PAGE.encode()
@@ -558,6 +842,14 @@ def make_handler(assembler: StateAssembler, interval: float):
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
+            elif self.path == "/auth/schwab":
+                store = TokenStore()
+                out = store.status()
+                # client_id is in every authorize URL by design; the app
+                # SECRET never leaves the server.
+                out["authorize_url"] = (authorize_url(store.app_key)
+                                        if out["configured"] else None)
+                self._json(out)
             elif self.path == "/events":
                 self.send_response(200)
                 self.send_header("Content-Type", "text/event-stream")
