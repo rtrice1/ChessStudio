@@ -241,6 +241,15 @@ class TestShadowBroker(unittest.TestCase):
             self.assertAlmostEqual(snap2["cash"], cash_before_save, places=2)
             self.assertAlmostEqual(snap2["realizedPnl"], realized_before_save, places=2)
 
+            # Open positions must survive the round trip (regression:
+            # 2026-08-18, load dropped them — their cost vanished from
+            # equity and the engine re-entered names it already held).
+            self.assertEqual(len(snap2["positions"]), 1)
+            pos = snap2["positions"][0]
+            self.assertEqual((pos["symbol"], pos["quantity"]), ("AAPL", 5))
+            # And equity prices the restored position, not just cash.
+            self.assertGreater(snap2["equity"], snap2["cash"])
+
     def test_list_orders(self):
         """Test listing orders."""
         self.broker.place_order("AAPL", "BUY", 10, order_type="MARKET")

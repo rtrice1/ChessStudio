@@ -7,9 +7,12 @@ import os
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from .client import BrokerClient, BrokerError
-from .indicators import summarize
+from .indicators import latest_day, summarize
+
+_ET = ZoneInfo("America/New_York")
 
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -207,13 +210,28 @@ def poll_once(client: BrokerClient, symbols: list[str], data_dir: str) -> dict:
         # Fetch quotes
         quotes_data = client.quotes(symbols)
 
-        # Fetch price history and compute indicators
+        # Fetch price history and compute indicators. Today's candles ride
+        # along in the snapshot (compact rows: [ET clock, o, h, l, c, vol])
+        # so the dashboard can draw real OHLCV charts — the dashboard owns
+        # no data feed of its own, it sees what the poller saw.
         indicators = {}
+        day_candles = {}
         for symbol in symbols:
             try:
                 history = client.price_history(symbol, days=5, interval=5)
                 candles = history.get("candles", [])
                 indicators[symbol] = summarize(candles)
+                rows = []
+                for c in latest_day(candles):
+                    try:
+                        clock = datetime.fromisoformat(
+                            str(c["datetime"])).astimezone(_ET).strftime("%H:%M")
+                    except (KeyError, ValueError):
+                        continue
+                    rows.append([clock, c.get("open"), c.get("high"),
+                                 c.get("low"), c.get("close"),
+                                 c.get("volume", 0)])
+                day_candles[symbol] = rows
             except Exception as e:
                 logger.error(f"Error fetching history for {symbol}: {e}")
                 indicators[symbol] = None
@@ -250,6 +268,7 @@ def poll_once(client: BrokerClient, symbols: list[str], data_dir: str) -> dict:
             "account": account_data,
             "quotes": quotes_data,
             "indicators": indicators,
+            "candles": day_candles,
             "alerts": alerts,
             "news": {
                 "items": news,

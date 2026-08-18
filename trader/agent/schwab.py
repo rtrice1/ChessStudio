@@ -26,6 +26,7 @@ import base64
 import json
 import os
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
@@ -33,6 +34,29 @@ from datetime import datetime, timezone
 API = "https://api.schwabapi.com"
 DEFAULT_TOKEN_PATH = os.path.join(os.path.dirname(__file__), "..", "data",
                                   "schwab_tokens.json")
+
+
+def redirect_uri() -> str:
+    return os.environ.get("SCHWAB_REDIRECT_URI", "https://127.0.0.1")
+
+
+def authorize_url(app_key: str, redirect: str | None = None) -> str:
+    return (f"{API}/v1/oauth/authorize?"
+            + urllib.parse.urlencode({"client_id": app_key,
+                                      "redirect_uri": redirect or redirect_uri()}))
+
+
+def extract_code(pasted: str) -> str:
+    """The ?code= out of a pasted redirect URL — or a bare code as-is.
+
+    Schwab codes end in '@' (arrives percent-encoded in the URL); parse_qs
+    decodes once, and the extra unquote tolerates double-encoded pastes."""
+    pasted = pasted.strip()
+    code = urllib.parse.parse_qs(
+        urllib.parse.urlparse(pasted).query).get("code", [""])[0]
+    if not code and pasted and "?" not in pasted and "://" not in pasted:
+        code = pasted
+    return urllib.parse.unquote(code)
 
 
 class SchwabError(Exception):
@@ -80,8 +104,19 @@ class TokenStore:
             headers={"Authorization": self._basic_auth(),
                      "Content-Type": "application/x-www-form-urlencoded"},
             method="POST")
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            tokens = json.loads(resp.read().decode())
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                tokens = json.loads(resp.read().decode())
+        except urllib.error.HTTPError as e:
+            # Schwab puts the actual reason (expired code, app not "Ready
+            # For Use", redirect mismatch) in the response body — losing it
+            # turns a 30-second fix into a mystery.
+            try:
+                detail = e.read().decode()[:300]
+            except Exception:
+                detail = ""
+            raise SchwabError(
+                f"token request failed: HTTP {e.code} {detail}".strip()) from None
         tokens["expires_at"] = time.time() + float(tokens.get("expires_in", 1800))
         tokens["refresh_obtained_at"] = self._tokens.get(
             "refresh_obtained_at", time.time())
@@ -108,6 +143,15 @@ class TokenStore:
     def refresh_age_days(self) -> float:
         obtained = float(self._tokens.get("refresh_obtained_at", time.time()))
         return (time.time() - obtained) / 86400.0
+
+    def status(self) -> dict:
+        """Connection state for display — never token material or secrets."""
+        return {
+            "configured": bool(self.app_key and self.app_secret),
+            "has_tokens": bool(self._tokens),
+            "refresh_age_days": (round(self.refresh_age_days(), 2)
+                                 if self._tokens else None),
+        }
 
 
 class SchwabClient:
@@ -157,9 +201,15 @@ class SchwabClient:
         return out
 
     def price_history(self, symbol: str, days: int = 5, interval: int = 5) -> dict:
+        # endDate is NOT optional in practice: without it Schwab ends the
+        # series at the PREVIOUS close, so intraday callers would compute
+        # today's VWAP/opening range from yesterday's bars (bitten
+        # 2026-08-18 — the engine traded today's prices against Monday's
+        # range). Explicit end-of-now includes today's partial session.
         raw = self._get("/marketdata/v1/pricehistory", {
             "symbol": symbol, "periodType": "day", "period": days,
             "frequencyType": "minute", "frequency": interval,
+            "endDate": int(time.time() * 1000),
             "needExtendedHoursData": "false"})
         candles = []
         for c in raw.get("candles", []):
@@ -273,21 +323,22 @@ def main() -> int:
             print("Set SCHWAB_APP_KEY and SCHWAB_APP_SECRET first "
                   "(see deploy/SCHWAB.md).")
             return 1
-        redirect = os.environ.get("SCHWAB_REDIRECT_URI", "https://127.0.0.1")
-        url = (f"{API}/v1/oauth/authorize?"
-               + urllib.parse.urlencode({"client_id": store.app_key,
-                                         "redirect_uri": redirect}))
+        redirect = redirect_uri()
         print("1. Open this URL, log in to Schwab, approve the app:")
-        print(f"\n   {url}\n")
+        print(f"\n   {authorize_url(store.app_key, redirect)}\n")
         print("2. Your browser lands on an error page — that's expected.")
         print("   Copy the FULL address-bar URL and paste it here.")
-        pasted = input("redirect URL> ").strip()
-        code = urllib.parse.parse_qs(
-            urllib.parse.urlparse(pasted).query).get("code", [""])[0]
+        code = extract_code(input("redirect URL> "))
         if not code:
             print("no ?code= found in that URL")
             return 1
-        store.exchange_code(urllib.parse.unquote(code), redirect)
+        try:
+            store.exchange_code(code, redirect)
+        except SchwabError as e:
+            print(f"exchange failed: {e}")
+            print("(codes expire in ~30s — re-run auth for a fresh URL; "
+                  "also confirm the app shows 'Ready For Use')")
+            return 1
         print(f"tokens saved to {store.path} (mode 600). "
               "Refresh token lasts ~7 days; re-run weekly.")
         return 0

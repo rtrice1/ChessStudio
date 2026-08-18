@@ -1,8 +1,11 @@
 """Tests for the Schwab client: translators, OCC mapping, order lockout."""
+import io
 import unittest
+import urllib.error
 from unittest import mock
 
-from agent.schwab import (OrdersDisabled, SchwabClient, TokenStore,
+from agent.schwab import (OrdersDisabled, SchwabClient, SchwabError,
+                          TokenStore, authorize_url, extract_code,
                           occ_to_schwab)
 
 
@@ -65,6 +68,22 @@ class TestHistoryAndChain(unittest.TestCase):
         out = c.price_history("AAPL")
         self.assertEqual(len(out["candles"]), 1)
         self.assertTrue(out["candles"][0]["datetime"].startswith("2025-08-14"))
+
+    def test_price_history_requests_through_now(self):
+        # Without endDate Schwab ends at the PREVIOUS close — intraday
+        # indicators would run on yesterday's bars (2026-08-18 regression).
+        seen = {}
+        c = client_with({})
+
+        def spy_get(path, params=None):
+            seen.update(params or {})
+            return {"candles": []}
+        c._get = spy_get
+        c.price_history("AAPL")
+        self.assertIn("endDate", seen)
+        import time as _time
+        self.assertAlmostEqual(seen["endDate"] / 1000.0, _time.time(),
+                               delta=60)
 
     def test_chain_translated(self):
         c = client_with({"/marketdata/v1/chains": {
@@ -130,6 +149,51 @@ class TestTokenStore(unittest.TestCase):
             with self.assertRaises(Exception) as caught:
                 store.access_token()
             self.assertIn("schwab auth", str(caught.exception))
+
+    def test_status_never_carries_secrets(self):
+        import tempfile, os
+        with tempfile.TemporaryDirectory() as tmp, \
+             mock.patch.dict("os.environ", {"SCHWAB_APP_KEY": "KEY",
+                                            "SCHWAB_APP_SECRET": "SECRET"}):
+            store = TokenStore(path=os.path.join(tmp, "none.json"))
+            status = store.status()
+            self.assertEqual(status, {"configured": True, "has_tokens": False,
+                                      "refresh_age_days": None})
+            self.assertNotIn("SECRET", str(status))
+
+    def test_token_error_surfaces_schwab_body(self):
+        import tempfile, os
+        with tempfile.TemporaryDirectory() as tmp:
+            store = TokenStore(path=os.path.join(tmp, "t.json"))
+            err = urllib.error.HTTPError(
+                "https://api.schwabapi.com/v1/oauth/token", 400, "Bad Request",
+                None, io.BytesIO(b'{"error":"invalid_grant"}'))
+            with mock.patch("agent.schwab.urllib.request.urlopen",
+                            side_effect=err):
+                with self.assertRaises(SchwabError) as caught:
+                    store.exchange_code("dead-code", "https://127.0.0.1")
+            self.assertIn("HTTP 400", str(caught.exception))
+            self.assertIn("invalid_grant", str(caught.exception))
+
+
+class TestAuthHelpers(unittest.TestCase):
+    def test_authorize_url_carries_client_id_and_redirect(self):
+        url = authorize_url("KEY123", "https://127.0.0.1")
+        self.assertIn("client_id=KEY123", url)
+        self.assertIn("redirect_uri=https%3A%2F%2F127.0.0.1", url)
+
+    def test_extract_code_from_full_redirect_url(self):
+        # Schwab codes end in '@', percent-encoded in the address bar.
+        self.assertEqual(
+            extract_code("https://127.0.0.1/?code=C0.abc%40&session=xyz"),
+            "C0.abc@")
+
+    def test_extract_code_accepts_bare_code(self):
+        self.assertEqual(extract_code("  C0.abc@ "), "C0.abc@")
+
+    def test_extract_code_empty_when_missing(self):
+        self.assertEqual(extract_code("https://127.0.0.1/?session=xyz"), "")
+        self.assertEqual(extract_code(""), "")
 
 
 if __name__ == "__main__":

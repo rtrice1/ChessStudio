@@ -276,11 +276,14 @@ class TestOptionsLayer(unittest.TestCase):
         for call in chain["calls"]:
             mid = (call["bid"] + call["ask"]) / 2
             spread = call["ask"] - call["bid"]
-            # For options > $0.10, spread should be <= 6% of mid, plus up
-            # to a cent each side lost to price rounding (bid rounds down,
-            # ask rounds up — a mid near an odd cent adds ~0.02 of spread)
+            # For options > $0.10, spread should be <= 6% of mid — except
+            # the generator's minimum half-spread is $0.02/side, which
+            # dominates for mids under ~$0.67 (bites whenever the sim
+            # clock puts a strike's mid in that range) — plus up to a cent
+            # each side lost to price rounding (bid rounds down, ask
+            # rounds up — a mid near an odd cent adds ~0.02 of spread)
             if mid > 0.10:
-                self.assertLessEqual(spread, mid * 0.061 + 0.02)
+                self.assertLessEqual(spread, max(mid * 0.061, 0.04) + 0.02)
             else:
                 # For cheap options, spread is dominated by minimum, but ask >= bid
                 self.assertGreater(call["ask"], call["bid"])

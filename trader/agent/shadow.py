@@ -123,22 +123,34 @@ class ShadowBroker:
 
         # Create account engine
         cash = starting_cash
+        positions: dict[str, dict] = {}
         if book_path and Path(book_path).exists():
-            cash, realized_pnl = self._load_book(book_path)
+            cash, realized_pnl, positions = self._load_book(book_path)
         else:
             realized_pnl = 0.0
 
         self.engine = AccountEngine(market=self.feed, starting_cash=cash)
         self.engine.realized_pnl = realized_pnl
+        # Restore open positions too — a book saved mid-day (e.g. after a
+        # --once smoke cycle) is not flat, and forgetting the positions
+        # makes their cost vanish from equity AND lets the engine re-enter
+        # names it already holds (both happened on 2026-08-18).
+        self.engine.positions = {
+            sym: {"quantity": int(p.get("quantity", 0)),
+                  "averagePrice": float(p.get("averagePrice", 0.0))}
+            for sym, p in positions.items() if int(p.get("quantity", 0))
+        }
 
-    def _load_book(self, path: str) -> tuple[float, float]:
-        """Load persisted cash and realized_pnl from book file."""
+    def _load_book(self, path: str) -> tuple[float, float, dict]:
+        """Load persisted cash, realized_pnl, and open positions."""
         try:
             with open(path, "r") as f:
                 data = json.load(f)
-            return data.get("cash", 100_000.0), data.get("realized_pnl", 0.0)
+            return (data.get("cash", 100_000.0),
+                    data.get("realized_pnl", 0.0),
+                    data.get("positions") or {})
         except Exception:
-            return 100_000.0, 0.0
+            return 100_000.0, 0.0, {}
 
     def quotes(self, symbols: list[str]) -> dict:
         """Get quotes for multiple symbols (delegates to data client)."""
