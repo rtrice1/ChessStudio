@@ -7,7 +7,7 @@ import unittest
 import urllib.request
 from unittest import mock
 
-from agent.dashboard import StateAssembler, create_server
+from agent.dashboard import StateAssembler, create_server, trades_view
 from agent.schwab import SchwabError, TokenStore
 
 
@@ -144,6 +144,61 @@ class TestStateAssembler(unittest.TestCase):
         self.assertIn("news -3", aapl["why"])
 
 
+class TestTradesView(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.data = self.tmp.name
+        append_jsonl(os.path.join(self.data, "ledger.jsonl"), [
+            # day 1: one full round trip
+            {"ts": "2026-08-18T14:38:00+00:00", "kind": "fill",
+             "symbol": "XOM", "action": "BUY", "quantity": 6,
+             "order": {"fillPrice": 163.90},
+             "rationale": "ORB: breakout | score +2"},
+            {"ts": "2026-08-18T15:10:00+00:00", "kind": "fill",
+             "symbol": "XOM", "action": "SELL", "quantity": 6,
+             "order": {"fillPrice": 164.40},
+             "rationale": "ATR target: 164.40 >= 164.35"},
+            # day 2: a loss and a lot still open
+            {"ts": "2026-08-19T13:35:00+00:00", "kind": "fill",
+             "symbol": "AAPL", "action": "BUY", "quantity": 3,
+             "order": {"fillPrice": 316.50}, "rationale": "ORB: x"},
+            {"ts": "2026-08-19T14:05:00+00:00", "kind": "fill",
+             "symbol": "AAPL", "action": "SELL", "quantity": 3,
+             "order": {"fillPrice": 316.00},
+             "rationale": "ATR stop: 316.00 <= 316.02"},
+            {"ts": "2026-08-19T14:44:00+00:00", "kind": "fill",
+             "symbol": "TSLA", "action": "BUY", "quantity": 2,
+             "order": {"fillPrice": 346.61}, "rationale": "ORB: y"}])
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_defaults_to_newest_day_with_open_lots(self):
+        view = trades_view(self.data)
+        self.assertEqual(view["dates"], ["2026-08-19", "2026-08-18"])
+        self.assertEqual(view["date"], "2026-08-19")
+        self.assertEqual(len(view["trips"]), 1)
+        trip = view["trips"][0]
+        self.assertEqual((trip["symbol"], trip["pnl"], trip["reason"]),
+                         ("AAPL", -1.50, "ATR stop"))
+        self.assertEqual(trip["entry_t"], "09:35")   # UTC ledger -> ET clock
+        self.assertEqual(view["open"],
+                         [{"symbol": "TSLA", "quantity": 2, "entry": 346.61,
+                           "entry_t": "10:44"}])
+        self.assertEqual(view["summary"]["pnl"], -1.50)
+
+    def test_picking_an_older_day(self):
+        view = trades_view(self.data, "2026-08-18")
+        self.assertEqual(view["date"], "2026-08-18")
+        self.assertEqual(view["summary"],
+                         {"trips": 1, "wins": 1, "win_rate": 1.0, "pnl": 3.0})
+        self.assertEqual(view["open"], [])
+
+    def test_unknown_date_falls_back_to_newest(self):
+        self.assertEqual(trades_view(self.data, "1999-01-01")["date"],
+                         "2026-08-19")
+
+
 class TestHttpEndpoints(unittest.TestCase):
     def test_page_state_and_sse(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -202,6 +257,10 @@ class TestSchwabAuthEndpoints(unittest.TestCase):
         page = urllib.request.urlopen(self.base + "/").read().decode()
         self.assertIn("Schwab connection", page)
         self.assertIn("/auth/schwab", page)
+        self.assertIn("Trade log", page)
+        trades = json.loads(
+            urllib.request.urlopen(self.base + "/trades").read())
+        self.assertEqual(trades["dates"], [])   # empty ledger, sane shape
 
     def test_status_unconfigured(self):
         with mock.patch.dict(os.environ, {

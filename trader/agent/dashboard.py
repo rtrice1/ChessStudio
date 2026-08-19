@@ -21,6 +21,7 @@ import json
 import os
 import threading
 import time
+import urllib.parse
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from zoneinfo import ZoneInfo
@@ -61,6 +62,79 @@ def _read_json(path: str):
             return json.load(f)
     except (json.JSONDecodeError, OSError):
         return None
+
+
+def _et_clock(ts: str) -> str:
+    try:
+        return datetime.fromisoformat(ts).astimezone(ET).strftime("%H:%M")
+    except ValueError:
+        return ts[11:16]
+
+
+def trades_view(data_dir: str, date: str | None = None) -> dict:
+    """The trade log for one calendar date: FIFO round trips with times,
+    unmatched (still-open) buys, and a day summary. Dates list drives the
+    day picker. All clocks ET."""
+    fills = []
+    path = os.path.join(data_dir, "ledger.jsonl")
+    if os.path.exists(path):
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                if '"fill"' not in line:
+                    continue
+                try:
+                    e = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if e.get("kind") == "fill":
+                    fills.append(e)
+    dates = sorted({f.get("ts", "")[:10] for f in fills if f.get("ts")},
+                   reverse=True)
+    date = date if date in dates else (dates[0] if dates else None)
+    lots: dict[str, list] = {}
+    trips: list[dict] = []
+    for f in fills:
+        if f.get("ts", "")[:10] != date:
+            continue
+        sym = f.get("symbol")
+        qty = int(f.get("quantity", 0))
+        px = float(((f.get("order") or {}).get("fillPrice")) or 0.0)
+        if not sym or qty <= 0 or px <= 0:
+            continue
+        clock = _et_clock(f.get("ts", ""))
+        why = str(f.get("rationale") or "")
+        if f.get("action") == "BUY":
+            lots.setdefault(sym, []).append([qty, px, clock, why])
+        else:
+            queue = lots.setdefault(sym, [])
+            remaining = qty
+            while remaining > 0 and queue:
+                lot = queue[0]
+                take = min(remaining, lot[0])
+                trips.append({
+                    "symbol": sym, "quantity": take,
+                    "entry_t": lot[2], "entry": round(lot[1], 4),
+                    "exit_t": clock, "exit": round(px, 4),
+                    "pnl": round((px - lot[1]) * take, 2),
+                    "reason": (why.split(":")[0].strip() or "exit"),
+                    "entry_why": lot[3].split(" | ")[0][:90],
+                })
+                lot[0] -= take
+                remaining -= take
+                if lot[0] == 0:
+                    queue.pop(0)
+    open_lots = [{"symbol": s, "quantity": lot[0], "entry": round(lot[1], 4),
+                  "entry_t": lot[2]}
+                 for s, queue in lots.items() for lot in queue]
+    pnl = round(sum(t["pnl"] for t in trips), 2)
+    wins = sum(1 for t in trips if t["pnl"] > 0)
+    return {"dates": dates[:30], "date": date,
+            "trips": list(reversed(trips)),   # newest first for reading
+            "open": open_lots,
+            "summary": {"trips": len(trips), "wins": wins,
+                        "win_rate": (round(wins / len(trips), 3)
+                                     if trips else None),
+                        "pnl": pnl}}
 
 
 class StateAssembler:
@@ -314,6 +388,11 @@ small{color:var(--muted)}
       <span style="color:#3fb950">▲</span>/<span style="color:#f85149">▼</span> fills (hover anything)</div>
     <div id="holdings">—</div></div>
   <div class="panel"><h2>Daily P&amp;L (%)</h2><svg id="dailypnl" width="100%" height="120" viewBox="0 0 600 120"></svg></div>
+  <div class="panel wide"><h2>Trade log
+    <select id="tl_date" style="float:right;background:var(--bg);border:1px solid var(--line);border-radius:6px;color:var(--ink);font:11px ui-monospace,monospace;padding:2px 6px"></select></h2>
+    <div id="tl_summary" style="font-size:12.5px;color:var(--ink2);margin-bottom:6px">—</div>
+    <div style="overflow-x:auto"><table id="tl_table"></table></div>
+    <div id="tl_open" style="font-size:12px;color:var(--ink2);margin-top:6px"></div></div>
   <div class="panel"><h2>Positions</h2><table id="positions"></table></div>
   <div class="panel"><h2>Live feed</h2><div class="feed" id="feed"></div></div>
   <div class="panel"><h2>Day plan</h2><div id="plan" style="color:var(--ink2);font-size:13px">—</div></div>
@@ -763,6 +842,35 @@ async function schwabPanel(){
   };
 }
 schwabPanel();setInterval(schwabPanel,60000);
+// Trade log: FIFO round trips for a chosen day, dropdown to time-travel.
+let tlDate=null;
+async function tradeLog(){
+  let d;
+  try{d=await(await fetch("/trades"+(tlDate?`?date=${tlDate}`:""))).json()}
+  catch(e){$("tl_summary").textContent="trade log unavailable: "+e.message;return}
+  const sel=$("tl_date");
+  if(sel.options.length!==d.dates.length){
+    sel.innerHTML=d.dates.map(x=>`<option value="${x}">${x}</option>`).join("");
+    sel.onchange=()=>{tlDate=sel.value;tradeLog()};
+  }
+  sel.value=d.date||"";
+  const s=d.summary;
+  $("tl_summary").innerHTML=s.trips
+    ?`${s.trips} round trips · ${s.wins} wins (${s.win_rate==null?"—":(s.win_rate*100).toFixed(0)+"%"}) · net <span class="${cls(s.pnl)}">${sign(s.pnl)}${fmt(s.pnl)}</span>`
+    :"no closed round trips this day";
+  $("tl_table").innerHTML=d.trips.length
+    ?`<tr><th>in→out</th><th>sym</th><th class="num">qty</th><th class="num">entry</th><th class="num">exit</th><th class="num">P&L</th><th>exit reason</th><th>entry trigger</th></tr>`+
+      d.trips.map(t=>`<tr><td>${t.entry_t}→${t.exit_t}</td>`+
+        `<td style="color:var(--ink)">${t.symbol}</td><td class="num">${t.quantity}</td>`+
+        `<td class="num">${fmt(t.entry)}</td><td class="num">${fmt(t.exit)}</td>`+
+        `<td class="num ${cls(t.pnl)}">${sign(t.pnl)}${fmt(t.pnl)}</td>`+
+        `<td>${t.reason}</td><td><small>${t.entry_why.replace(/</g,"&lt;")}</small></td></tr>`).join("")
+    :"";
+  $("tl_open").innerHTML=d.open.length
+    ?"still open: "+d.open.map(o=>`<span class="chip">${o.quantity}x ${o.symbol} @ ${fmt(o.entry)} <small>(${o.entry_t})</small></span>`).join("")
+    :"";
+}
+tradeLog();setInterval(()=>{if(!tlDate||tlDate===$("tl_date").options[0]?.value)tradeLog()},30000);
 // One broken panel must never blank the whole desk: each renders inside
 // its own try/catch, and any failure lands visibly in the tab title.
 const PANELS=[["tiles",tiles],["chips",chips],["spark",s=>spark(s.equity_series)],
@@ -842,6 +950,11 @@ def make_handler(assembler: StateAssembler, interval: float):
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
+            elif self.path.startswith("/trades"):
+                query = urllib.parse.parse_qs(
+                    urllib.parse.urlparse(self.path).query)
+                self._json(trades_view(assembler.data_dir,
+                                       (query.get("date") or [None])[0]))
             elif self.path == "/auth/schwab":
                 store = TokenStore()
                 out = store.status()
