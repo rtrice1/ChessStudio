@@ -31,8 +31,17 @@ Windows clock — keep it on America/New_York or the timers fire at the
 wrong hours.
 
 **Option B — native Windows Python:** `pip install -r requirements.txt`
-(this pulls `tzdata`, which Windows needs for timezone support), then
-run pieces manually:
+(this pulls `tzdata`, which Windows needs for timezone support). The
+morning is scheduled: run `deploy\install_windows.ps1` once to register
+the **TraderDesk-Morning** Task Scheduler job — weekdays 08:00 local
+(09:00 ET on a Central-time box; adjust `-At` if the machine keeps a
+different clock), 30 minutes before the open. It runs
+`deploy\windows_morning.ps1`: kills stale desk processes, rotates logs,
+runs the pre-market rumor scan and checkpoint (into `data\morning.log`),
+then launches the dashboard and `run_live` (which idles until 09:30).
+The PC must be awake at 08:00 — Windows sleep suspends everything.
+Evening jobs (rumor grade, EDGAR, nightly sim) remain manual. Other
+pieces, run by hand:
 
 ```powershell
 python -m unittest discover -s tests     # should be all green, same as Linux
