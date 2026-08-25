@@ -218,6 +218,14 @@ def score_entry(ind: dict, news: dict | None = None,
         score += 0.25 if hist_slope > 0 else -0.25
         reasons.append(f"macd-h slope {'+' if hist_slope > 0 else '-'}")
 
+    # 1-minute TTM squeeze momentum at the trigger — LOGGED, NOT SCORED.
+    # It rides into the ledger's entry rationale so reasoning_stats can
+    # grade "entered while building vs fading"; a weight only if it earns
+    # one there (visual evidence 2026-08-18: losses cluster on fading).
+    momo_1m = ind.get("momo_1m_state")
+    if momo_1m:
+        reasons.append(f"1m-momo {momo_1m}")
+
     if news:
         sent = (int(news.get("wire_sentiment") or 0)
                 + int(news.get("board_sentiment") or 0))

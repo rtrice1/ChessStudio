@@ -66,6 +66,19 @@ class TestReasoningStats(unittest.TestCase):
         self.assertEqual(r["by_entry_score"][">=3"]["n"], 2)
         self.assertEqual(r["by_entry_score"]["0-1"]["win_rate"], 0.0)
 
+    def test_momo_state_at_entry_is_graded(self):
+        from agent.metrics import reasoning_stats, round_trips
+        fills = [
+            self.rfill("AAPL", "BUY", 10, 100.0,
+                       "ORB: x | score +2.00 (adx, 1m-momo building)"),
+            self.rfill("AAPL", "SELL", 10, 103.0, "ATR target: hit"),
+            self.rfill("MSFT", "BUY", 10, 100.0,
+                       "ORB: x | score +2.00 (adx, 1m-momo fading)"),
+            self.rfill("MSFT", "SELL", 10, 98.0, "ATR stop: hit")]
+        r = reasoning_stats(round_trips(fills))
+        self.assertEqual(r["by_momo_1m"]["building"]["win_rate"], 1.0)
+        self.assertEqual(r["by_momo_1m"]["fading"]["total_pnl"], -20.0)
+
     def test_unscored_entries_are_not_binned(self):
         from agent.metrics import reasoning_stats, round_trips
         fills = [self.rfill("AAPL", "BUY", 10, 100.0, "manual entry, no score"),

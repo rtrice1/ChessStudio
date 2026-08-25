@@ -10,7 +10,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from .client import BrokerClient, BrokerError
-from .indicators import latest_day, summarize
+from .indicators import atr, latest_day, momo_state, summarize, ttm_momentum
 
 _ET = ZoneInfo("America/New_York")
 
@@ -232,6 +232,17 @@ def poll_once(client: BrokerClient, symbols: list[str], data_dir: str) -> dict:
                         symbol, days=1, interval=1).get("candles", []))
                 except Exception:
                     day1 = []
+                # 1-minute TIMING features, riding along with the 5-minute
+                # structural indicators. Logged into entry rationales
+                # (unweighted) so the scoreboard can grade whether entry
+                # timing by squeeze momentum earns a real weight.
+                if day1 and indicators[symbol] is not None:
+                    momo = ttm_momentum(day1)
+                    state = momo_state(momo)
+                    if state:
+                        indicators[symbol]["momo_1m"] = round(momo[-1], 4)
+                        indicators[symbol]["momo_1m_state"] = state
+                        indicators[symbol]["atr14_1m"] = atr(day1, 14)
                 rows = []
                 for c in (day1 or latest_day(candles)):
                     try:

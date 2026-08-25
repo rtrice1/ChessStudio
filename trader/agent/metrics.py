@@ -205,13 +205,21 @@ def reasoning_stats(trips: list[dict]) -> dict:
     """
     by_exit: dict[str, list[float]] = {}
     by_score: dict[str, list[float]] = {}
+    by_momo: dict[str, list[float]] = {}
     for t in trips:
         by_exit.setdefault(_reason_tag(t.get("exit_rationale")), []).append(t["pnl"])
         band = _score_band(t.get("entry_rationale"))
         if band is not None:
             by_score.setdefault(band, []).append(t["pnl"])
+        # 1-minute TTM squeeze momentum state, frozen into the entry
+        # rationale at decision time (logged unweighted since 2026-08-25;
+        # this table decides whether it ever earns a weight).
+        momo = re.search(r"1m-momo (\w+)", str(t.get("entry_rationale") or ""))
+        if momo:
+            by_momo.setdefault(momo.group(1), []).append(t["pnl"])
     return {"by_exit": {k: _bucket(v) for k, v in sorted(by_exit.items())},
-            "by_entry_score": {k: _bucket(v) for k, v in sorted(by_score.items())}}
+            "by_entry_score": {k: _bucket(v) for k, v in sorted(by_score.items())},
+            "by_momo_1m": {k: _bucket(v) for k, v in sorted(by_momo.items())}}
 
 
 def plan_stats(journal: list[dict]) -> dict:

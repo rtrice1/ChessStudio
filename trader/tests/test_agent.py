@@ -414,6 +414,48 @@ class TestPriorDayLevels(unittest.TestCase):
         self.assertIn("prev_day_high", summarize([]))  # key present when empty
 
 
+class TestTtmMomentum(unittest.TestCase):
+    """1-minute entry-timing momentum: linreg of close vs Donchian/SMA mid."""
+
+    @staticmethod
+    def flat_then_ramp(n_flat=45, n_ramp=15):
+        candles = [{"high": 100.2, "low": 99.8, "close": 100.0}
+                   for _ in range(n_flat)]
+        for i in range(n_ramp):
+            px = 100.0 + (i + 1) * 0.5
+            candles.append({"high": px + 0.2, "low": px - 0.2, "close": px})
+        return candles
+
+    def test_warmup_is_none_then_values(self):
+        from agent.indicators import ttm_momentum
+        momo = ttm_momentum(self.flat_then_ramp())
+        self.assertIsNone(momo[37])          # < 2*20-2 bars of context
+        self.assertIsNotNone(momo[-1])
+
+    def test_ramp_reads_positive_and_building(self):
+        from agent.indicators import momo_state, ttm_momentum
+        momo = ttm_momentum(self.flat_then_ramp())
+        self.assertGreater(momo[-1], 0)
+        self.assertEqual(momo_state(momo), "building")
+
+    def test_selloff_reads_falling(self):
+        from agent.indicators import momo_state, ttm_momentum
+        candles = [{"high": 100.2, "low": 99.8, "close": 100.0}
+                   for _ in range(45)]
+        for i in range(15):
+            px = 100.0 - (i + 1) * 0.5
+            candles.append({"high": px + 0.2, "low": px - 0.2, "close": px})
+        momo = ttm_momentum(candles)
+        self.assertLess(momo[-1], 0)
+        self.assertEqual(momo_state(momo), "falling")
+
+    def test_empty_and_short_series_are_none(self):
+        from agent.indicators import momo_state, ttm_momentum
+        self.assertEqual(ttm_momentum([]), [])
+        self.assertIsNone(momo_state([]))
+        self.assertIsNone(momo_state([None, None]))
+
+
 class TestMomentumIndicators(unittest.TestCase):
     """Test momentum indicators: MACD, Stochastic, ADX, ROC, Bollinger, OBV, Relative Volume."""
 

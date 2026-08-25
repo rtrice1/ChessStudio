@@ -126,6 +126,14 @@ class TestEntryScoring(unittest.TestCase):
         self.assertEqual(score_entry(IND_WEAK, hunch=hunch),
                          score_entry(IND_WEAK))
 
+    def test_momo_state_logged_but_never_scored(self):
+        base_score, base_why = score_entry(IND_STRONG)
+        logged_score, logged_why = score_entry(
+            {**IND_STRONG, "momo_1m_state": "fading"})
+        self.assertEqual(logged_score, base_score)   # zero weight, by design
+        self.assertIn("1m-momo fading", logged_why)
+        self.assertNotIn("1m-momo", base_why)
+
     def test_clearing_prior_day_high_scores_up(self):
         base, _ = score_entry(IND_STRONG)
         clear, why = score_entry({**IND_STRONG, "last_close": 101.5,

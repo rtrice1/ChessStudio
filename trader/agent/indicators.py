@@ -439,6 +439,48 @@ def bollinger(closes: list[float], n: int = 20, k: float = 2.0) -> dict | None:
     }
 
 
+def ttm_momentum(candles: list[dict], length: int = 20) -> list[float | None]:
+    """TTM-squeeze-style momentum: close minus the Donchian/SMA midline,
+    then the linear-regression endpoint of that delta over `length` bars.
+    Needs ~2×length bars to warm up; earlier slots are None. Run on 1-min
+    bars this is the desk's entry-TIMING read (the structural indicators
+    stay on 5-min bars)."""
+    n = len(candles)
+    closes = [c.get("close", 0.0) for c in candles]
+    delta: list[float | None] = [None] * n
+    for i in range(length - 1, n):
+        window = candles[i - length + 1:i + 1]
+        hh = max(c.get("high", 0.0) for c in window)
+        ll = min(c.get("low", 0.0) for c in window)
+        sma_v = sum(c.get("close", 0.0) for c in window) / length
+        delta[i] = closes[i] - ((hh + ll) / 2 + sma_v) / 2
+    momo: list[float | None] = [None] * n
+    sx = (length - 1) * length / 2
+    sxx = (length - 1) * length * (2 * length - 1) / 6
+    for i in range(2 * length - 2, n):
+        ys = delta[i - length + 1:i + 1]
+        if any(y is None for y in ys):
+            continue
+        sy = sum(ys)
+        sxy = sum(k * y for k, y in enumerate(ys))
+        slope = (length * sxy - sx * sy) / (length * sxx - sx * sx)
+        momo[i] = (sy - slope * sx) / length + slope * (length - 1)
+    return momo
+
+
+def momo_state(momo: list[float | None]) -> str | None:
+    """The last momentum bar's read: building / fading (positive momentum
+    rising / falling) or recovering / falling (negative rising / falling)."""
+    if not momo or momo[-1] is None:
+        return None
+    cur = momo[-1]
+    prev = momo[-2] if len(momo) > 1 else None
+    rising = prev is None or cur >= prev
+    if cur >= 0:
+        return "building" if rising else "fading"
+    return "recovering" if rising else "falling"
+
+
 def momentum_phase(velocity: float | None, accel: float | None) -> str | None:
     """Where we are on the move's curve, from its first two derivatives.
 
