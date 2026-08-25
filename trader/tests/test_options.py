@@ -307,7 +307,9 @@ class TestOptionsLayer(unittest.TestCase):
 
     def test_contract_quote(self):
         """contract_quote should return per-contract prices."""
-        occ = "AAPL260821C00150000"
+        # Expiry from the sim's own clock — a hardcoded date is a time bomb
+        # (the 2026-08-21 original started failing the Monday after OPEX).
+        occ = make_occ("AAPL", self.market._sim_timestamp().date(), "C", 150.0)
         quote = self.options.contract_quote(occ)
 
         self.assertNotIn("error", quote)
@@ -386,7 +388,8 @@ class TestMarketWithOptions(unittest.TestCase):
 
     def test_quote_option_contract(self):
         """Quote for OCC symbol should use options."""
-        quote = self.wrapper.quote("AAPL260821C00150000")
+        occ = make_occ("AAPL", self.wrapper._sim_timestamp().date(), "C", 150.0)
+        quote = self.wrapper.quote(occ)
         self.assertNotIn("error", quote)
         self.assertIn("multiplier", quote)
         self.assertEqual(quote["multiplier"], 100)

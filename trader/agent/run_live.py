@@ -123,6 +123,7 @@ def main() -> int:
         print(f"event calendar: {len(events)} scheduled event(s) loaded")
     last_blackout = ""
     day_stopped = flattened = gut_checked = False
+    polls_ok = 0
     while True:
         now = datetime.now(ET)
         if not args.once:
@@ -141,6 +142,7 @@ def main() -> int:
             last_blackout = blackout_now
         try:
             snapshot = poll_once(broker, SYMBOLS, args.data_dir)
+            polls_ok += 1
             # One gut check after the opening range forms: the day's
             # fingerprint shades entry scoring for the rest of the session.
             if not gut_checked and ctx.session_pct >= 0.10:
@@ -188,6 +190,17 @@ def main() -> int:
     final = broker.account()
     open_pos = [p for p in final["positions"] if p["quantity"]]
     pnl = float(final["equity"]) - float(start["equity"])
+    if polls_ok == 0 and not args.once:
+        # A session that never saw the market is not a trading day — it
+        # must not journal, must not teach the gut, must not write a
+        # wrap-up (2026-08-25: expired refresh token, 3870 failed polls,
+        # and a junk "0 trades" day nearly entered the record).
+        print("BLIND SESSION: zero successful polls — nothing to record. "
+              "Check Schwab auth (weekly refresh?) before tomorrow.",
+              file=sys.stderr)
+        ledger.record("blind_session", {"polls_ok": 0})
+        broker.save()
+        return 1
     day_type = None
     features = features_from_client(broker, SYMBOLS)
     if features:

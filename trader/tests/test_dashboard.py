@@ -248,8 +248,11 @@ class TestSchwabAuthEndpoints(unittest.TestCase):
         self.tmp.cleanup()
 
     def _post(self, obj: dict) -> dict:
+        return self._post_to("/auth/schwab", obj)
+
+    def _post_to(self, path: str, obj: dict) -> dict:
         req = urllib.request.Request(
-            self.base + "/auth/schwab", data=json.dumps(obj).encode(),
+            self.base + path, data=json.dumps(obj).encode(),
             headers={"Content-Type": "application/json"}, method="POST")
         return json.loads(urllib.request.urlopen(req).read())
 
@@ -301,6 +304,59 @@ class TestSchwabAuthEndpoints(unittest.TestCase):
                 {"redirect_url": "https://127.0.0.1/?code=C0.abc%40"})
         self.assertTrue(out["ok"])
         exchanged.assert_called_once_with("C0.abc@", "https://127.0.0.1")
+
+    def test_reddit_connect_stores_verifies_and_scans(self):
+        stored = {}
+
+        class FakeSource:
+            fetch_errors = 0
+
+            def _app_token(self):
+                return "TOK"
+
+            def fetch(self, watch):
+                return [{"ts": "t", "source": "r/stocks",
+                         "title": "$TSLA squeeze", "tickers": ["TSLA"]},
+                        {"ts": "t", "source": "r/stocks",
+                         "title": "TSLA calls", "tickers": ["TSLA"]}]
+
+        with mock.patch("agent.dashboard._store_user_env",
+                        side_effect=lambda k, v: stored.update({k: v})), \
+             mock.patch("agent.dashboard.RedditSource", FakeSource):
+            out = self._post_to("/auth/reddit",
+                                {"client_id": "cid1", "client_secret": "sec1"})
+        self.assertTrue(out["ok"])
+        self.assertEqual(out["scan"]["posts_seen"], 2)
+        self.assertEqual(out["scan"]["tickers"], 1)
+        self.assertEqual(stored, {"REDDIT_CLIENT_ID": "cid1",
+                                  "REDDIT_CLIENT_SECRET": "sec1"})
+
+    def test_reddit_connect_rejects_bad_credentials(self):
+        class DeadSource:
+            fetch_errors = 1
+
+            def _app_token(self):
+                return None
+
+        with mock.patch("agent.dashboard._store_user_env"), \
+             mock.patch("agent.dashboard.RedditSource", DeadSource):
+            out = self._post_to("/auth/reddit",
+                                {"client_id": "x", "client_secret": "y"})
+        self.assertFalse(out["ok"])
+        self.assertIn("rejected", out["error"])
+
+    def test_reddit_connect_requires_both_fields(self):
+        out = self._post_to("/auth/reddit", {"client_id": "only"})
+        self.assertFalse(out["ok"])
+
+    def test_reddit_status_never_carries_secrets(self):
+        with mock.patch.dict(os.environ, {"REDDIT_CLIENT_ID": "cid-XYZ",
+                                          "REDDIT_CLIENT_SECRET": "sec-XYZ"}):
+            raw = urllib.request.urlopen(
+                self.base + "/auth/reddit").read().decode()
+        st = json.loads(raw)
+        self.assertTrue(st["configured"])
+        self.assertNotIn("XYZ", raw)
 
     def test_exchange_failure_reports_schwab_error(self):
         with mock.patch.dict(os.environ, {

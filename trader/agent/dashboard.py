@@ -22,13 +22,15 @@ import os
 import threading
 import time
 import urllib.parse
-from datetime import datetime
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from zoneinfo import ZoneInfo
 
 from agent.events import active_blackouts, load_events
 from agent.metrics import day_trades_last_sessions
 from agent.metrics import scoreboard as compute_scoreboard
+from agent.rumors import (DEFAULT_WATCH, RedditSource, latest_scan,
+                          scan as rumor_scan)
 from agent.rumors import context as rumors_context
 from agent.schwab import (SchwabError, TokenStore, authorize_url,
                           extract_code, redirect_uri)
@@ -62,6 +64,20 @@ def _read_json(path: str):
             return json.load(f)
     except (json.JSONDecodeError, OSError):
         return None
+
+
+def _store_user_env(name: str, value: str) -> None:
+    """Persist a secret to the Windows USER environment (registry) and this
+    process. Non-Windows hosts skip the registry — there, secrets live in
+    systemd env files per the deploy docs. Never logged, never echoed."""
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment", 0,
+                            winreg.KEY_SET_VALUE) as key:
+            winreg.SetValueEx(key, name, 0, winreg.REG_SZ, value)
+    except (ImportError, OSError):
+        pass
+    os.environ[name] = value
 
 
 def _et_clock(ts: str) -> str:
@@ -250,9 +266,26 @@ class StateAssembler:
                 continue
             session_fills.setdefault(e.get("symbol", "?"), []).append(
                 [fts[11:19], e.get("action"), float(px)])
+        # A stale snapshot during market hours = the desk may be blind
+        # (dead token, dead poller). The page turns it into a banner.
+        now_et = datetime.now(ET)
+        minutes = now_et.hour * 60 + now_et.minute
+        market_open = now_et.weekday() < 5 and 570 <= minutes < 960
+        data_age_s = None
+        if ts:
+            try:
+                stamp = datetime.fromisoformat(ts)
+                if stamp.tzinfo is None:   # tolerate naive stamps (tests, sims)
+                    stamp = stamp.replace(tzinfo=timezone.utc)
+                data_age_s = round(
+                    (datetime.now(timezone.utc) - stamp).total_seconds())
+            except ValueError:
+                pass
         return {
             "ts": time.time(),
             "mode": session_mode,
+            "market_open": market_open,
+            "data_age_s": data_age_s,
             "account": account,
             "alerts": (latest.get("alerts") or [])[-8:],
             "positions": [p for p in account.get("positions", [])
@@ -363,6 +396,7 @@ small{color:var(--muted)}
   <pre id="mbody"></pre>
 </div></div>
 <div class="halt" id="halt">⛔ HALT file present — all trading stopped</div>
+<div class="halt" id="stale" style="background:#8a4340">⚠ MARKET DATA STALE — the desk may be blind (dead Schwab token? dead session?) <span id="staleage"></span></div>
 <div class="tiles" id="tiles"></div>
 <div style="margin-bottom:10px" id="chips"></div>
 <div class="grid">
@@ -402,6 +436,7 @@ small{color:var(--muted)}
   <div class="panel"><h2 id="wrapbtn" style="cursor:pointer">Daily wrap-up <span style="float:right;color:var(--accent);text-transform:none">open ⤢</span></h2><pre id="wrapup" style="font-size:12px;color:var(--ink2);white-space:pre-wrap;max-height:340px;overflow-y:auto">—</pre></div>
   <div class="panel"><h2>Desk beliefs</h2><div id="beliefs" style="font-size:12.5px;color:var(--ink2)"></div></div>
   <div class="panel"><h2>Schwab connection</h2><div id="schwab" style="font-size:12.5px;color:var(--ink2)">—</div></div>
+  <div class="panel"><h2>Reddit connection</h2><div id="reddit" style="font-size:12.5px;color:var(--ink2)">—</div></div>
 </div>
 <script>
 const $=id=>document.getElementById(id);
@@ -842,6 +877,44 @@ async function schwabPanel(){
   };
 }
 schwabPanel();setInterval(schwabPanel,60000);
+// Reddit: paste the script-app id+secret once; stored user-scope like the
+// Schwab keys, verified live, and a scan runs immediately as proof.
+async function redditPanel(){
+  const box=$("reddit");
+  const inp=document.getElementById("rd_id");
+  if(inp&&(inp.value||document.getElementById("rd_sec").value))return;
+  let st;
+  try{st=await(await fetch("/auth/reddit")).json()}
+  catch(e){box.textContent="status unavailable: "+e.message;return}
+  const scanLine=st.scan
+    ?(st.scan.fetch_errors&&!st.scan.posts_seen
+      ?`<span class="neg">last scan (${st.scan.for_date}): BLOCKED — ${st.scan.fetch_errors} fetch errors</span>`
+      :`last scan (${st.scan.for_date}): ${st.scan.posts_seen} posts, ${st.scan.tickers} tickers`)
+    :"no scan on record";
+  box.innerHTML=`<div>${st.configured?'<span class="pos">credentials stored</span>':'<span class="neg">not connected</span>'} · ${scanLine}</div>`+
+    `<div style="margin-top:6px"><small>Create a <b>script</b> app at reddit.com/prefs/apps (Google login works — no Reddit password needed), then paste its two strings:</small></div>`+
+    `<div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap">`+
+    `<input id="rd_id" placeholder="client id (under the app name)" autocomplete="off" style="flex:1;min-width:130px;background:var(--bg);border:1px solid var(--line);border-radius:6px;color:var(--ink);font:12px ui-monospace,monospace;padding:6px 8px">`+
+    `<input id="rd_sec" type="password" placeholder="secret" autocomplete="off" style="flex:1;min-width:130px;background:var(--bg);border:1px solid var(--line);border-radius:6px;color:var(--ink);font:12px ui-monospace,monospace;padding:6px 8px">`+
+    `<button id="rd_go" style="background:var(--bg);border:1px solid var(--accent);border-radius:6px;color:var(--accent);font:12px ui-monospace,monospace;padding:6px 12px;cursor:pointer">connect</button></div>`+
+    `<div id="rd_msg" style="margin-top:6px;font-size:12px"></div>`;
+  $("rd_go").onclick=async()=>{
+    const msg=$("rd_msg");
+    msg.textContent="verifying with Reddit + running first scan…";
+    try{
+      const r=await(await fetch("/auth/reddit",{method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({client_id:$("rd_id").value,
+                             client_secret:$("rd_sec").value})})).json();
+      if(r.ok){
+        msg.innerHTML=`<span class="pos">✓ connected — scan for ${r.scan.for_date}: ${r.scan.posts_seen} posts, ${r.scan.tickers} tickers above the floor</span>`;
+        $("rd_id").value="";$("rd_sec").value="";
+        setTimeout(redditPanel,2500);
+      }else{msg.textContent="✗ "+(r.error||"failed");msg.className="neg";}
+    }catch(e){msg.textContent="✗ "+e.message;msg.className="neg";}
+  };
+}
+redditPanel();setInterval(redditPanel,60000);
 // Trade log: FIFO round trips for a chosen day, dropdown to time-travel.
 let tlDate=null;
 async function tradeLog(){
@@ -881,6 +954,9 @@ const PANELS=[["tiles",tiles],["chips",chips],["spark",s=>spark(s.equity_series)
   ["wrapup",wrapup]];
 function render(s){
   $("halt").style.display=s.halted?"block":"none";
+  const blind=s.market_open&&s.data_age_s!=null&&s.data_age_s>180;
+  $("stale").style.display=blind?"block":"none";
+  if(blind)$("staleage").textContent=`— last data ${Math.round(s.data_age_s/60)} min ago`;
   for(const [name,fn] of PANELS){
     try{fn(s)}catch(e){document.title="DESK "+name+" error: "+e.message}}}
 const es=new EventSource("/events");
@@ -905,6 +981,42 @@ def make_handler(assembler: StateAssembler, interval: float):
             self.wfile.write(body)
 
         def do_POST(self):
+            if self.path == "/auth/reddit":
+                # Store the script-app credentials (user-scope env, same
+                # home as the Schwab keys), verify them with a real token
+                # request, and run an immediate scan so the panel shows
+                # live proof. Secrets go in; only status comes out.
+                length = int(self.headers.get("Content-Length") or 0)
+                try:
+                    payload = json.loads(
+                        self.rfile.read(length).decode() or "{}")
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    payload = {}
+                cid = str(payload.get("client_id") or "").strip()
+                secret = str(payload.get("client_secret") or "").strip()
+                if not cid or not secret:
+                    self._json({"ok": False,
+                                "error": "both fields are required"})
+                    return
+                _store_user_env("REDDIT_CLIENT_ID", cid)
+                _store_user_env("REDDIT_CLIENT_SECRET", secret)
+                source = RedditSource()
+                if source._app_token() is None:
+                    self._json({"ok": False,
+                                "error": "Reddit rejected the credentials — "
+                                         "check both strings on "
+                                         "reddit.com/prefs/apps (type must "
+                                         "be 'script')"})
+                    return
+                record = rumor_scan([source], DEFAULT_WATCH,
+                                    os.path.join(assembler.desk_dir,
+                                                 "rumors.jsonl"))
+                self._json({"ok": True,
+                            "scan": {"for_date": record["for_date"],
+                                     "posts_seen": record["posts_seen"],
+                                     "fetch_errors": record["fetch_errors"],
+                                     "tickers": len(record["tickers"])}})
+                return
             if self.path != "/auth/schwab":
                 self.send_error(404)
                 return
@@ -955,6 +1067,18 @@ def make_handler(assembler: StateAssembler, interval: float):
                     urllib.parse.urlparse(self.path).query)
                 self._json(trades_view(assembler.data_dir,
                                        (query.get("date") or [None])[0]))
+            elif self.path == "/auth/reddit":
+                last = latest_scan(os.path.join(assembler.desk_dir,
+                                                "rumors.jsonl"))
+                self._json({
+                    "configured": bool(os.environ.get("REDDIT_CLIENT_ID")
+                                       and os.environ.get(
+                                           "REDDIT_CLIENT_SECRET")),
+                    "scan": ({"for_date": last.get("for_date"),
+                              "posts_seen": last.get("posts_seen"),
+                              "fetch_errors": last.get("fetch_errors", 0),
+                              "tickers": len(last.get("tickers") or {})}
+                             if last else None)})
             elif self.path == "/auth/schwab":
                 store = TokenStore()
                 out = store.status()

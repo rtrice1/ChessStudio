@@ -48,6 +48,19 @@ if (Test-Path $sessionLog) {
 # 4. Checkpoint into the log — the morning's self-inspection, on the record.
 & $py -m agent.checkpoint 2>&1 | ForEach-Object { Log $_ }
 
+# 4b. Prove data access BEFORE launching. Schwab expires refresh tokens
+#     every ~7 days; a dead token means a blind desk (2026-08-25: a full
+#     session of failed polls). The warning below must be impossible to
+#     miss in the log; we still launch, so a mid-morning re-auth from the
+#     dashboard panel lets the session recover on its own.
+& $py -m agent.schwab test 2>&1 | Select-Object -First 2 | ForEach-Object { Log "schwab: $_" }
+if ($LASTEXITCODE -ne 0) {
+    1..3 | ForEach-Object {
+        Log "!!! SCHWAB DATA ACCESS FAILED — THE DESK IS BLIND UNTIL RE-AUTH !!!"
+    }
+    Log "!!! Fix now: dashboard :8899 -> Schwab connection -> weekly login !!!"
+}
+
 # 5. Launch the day: dashboard first, then the runner (it idles until 09:30).
 Start-Process -FilePath $py -ArgumentList "-m", "agent.dashboard" -WindowStyle Hidden
 Start-Process -FilePath $py -ArgumentList "-u", "-m", "agent.run_live", "--starting-cash", "10000" `
