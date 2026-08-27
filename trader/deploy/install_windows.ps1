@@ -1,10 +1,10 @@
 # Register the desk's morning wake-up with Windows Task Scheduler.
-# Fires weekdays at the LOCAL equivalent of 09:00 ET — 30 minutes before
-# the open — computed at install time from the machine's own timezone, so
+# Fires weekdays at the LOCAL equivalent of 09:00 ET - 30 minutes before
+# the open - computed at install time from the machine's own timezone, so
 # it is correct whether the box thinks it's Eastern, Central, or Pacific.
-# IF THE MACHINE'S TIMEZONE EVER CHANGES, RERUN THIS SCRIPT — Task
+# IF THE MACHINE'S TIMEZONE EVER CHANGES, RERUN THIS SCRIPT - Task
 # Scheduler triggers are local-time and will NOT adjust themselves.
-# Idempotent: re-running replaces the task. The PC must be awake —
+# Idempotent: re-running replaces the task. The PC must be awake -
 # Windows sleep suspends everything (DEPLOY.md).
 
 $repo = Split-Path -Parent $PSScriptRoot

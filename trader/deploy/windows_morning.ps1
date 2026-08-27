@@ -1,9 +1,9 @@
-# The desk's Windows morning ritual — scheduled for 09:00 ET (08:00 local,
+# The desk's Windows morning ritual - scheduled for 09:00 ET (08:00 local,
 # this box runs US Central; ET-4/CT-5 shift together through DST so the
 # 1-hour offset holds year-round). Registered by deploy/install_windows.ps1
 # as a Task Scheduler job, weekdays. A fresh clean slate every morning:
 # stale processes killed, logs rotated, scan run, both processes relaunched.
-# The BOOK is not reset — the $10k allocation and its record carry forward;
+# The BOOK is not reset - the $10k allocation and its record carry forward;
 # "clean slate" means processes and charts, not the ledger.
 
 $ErrorActionPreference = "Continue"
@@ -45,7 +45,7 @@ if (Test-Path $sessionLog) {
 # 3. Overnight/pre-market rumor scan (targets today when run before 09:30).
 & $py -m agent.rumors scan 2>&1 | ForEach-Object { Log "rumors: $_" }
 
-# 4. Checkpoint into the log — the morning's self-inspection, on the record.
+# 4. Checkpoint into the log - the morning's self-inspection, on the record.
 & $py -m agent.checkpoint 2>&1 | ForEach-Object { Log $_ }
 
 # 4b. Prove data access BEFORE launching. Schwab expires refresh tokens
@@ -53,10 +53,15 @@ if (Test-Path $sessionLog) {
 #     session of failed polls). The warning below must be impossible to
 #     miss in the log; we still launch, so a mid-morning re-auth from the
 #     dashboard panel lets the session recover on its own.
-& $py -m agent.schwab test 2>&1 | Select-Object -First 2 | ForEach-Object { Log "schwab: $_" }
-if ($LASTEXITCODE -ne 0) {
+#     ASCII ONLY in this file: PS 5.1 reads BOM-less files as ANSI, and a
+#     UTF-8 em-dash inside a string decodes into a smart quote that
+#     TERMINATES THE STRING (2026-08-26/27: parse error, task ran nothing).
+$schwabOut = & $py -m agent.schwab test 2>&1
+$schwabOk = ($LASTEXITCODE -eq 0)
+$schwabOut | Select-Object -First 2 | ForEach-Object { Log "schwab: $_" }
+if (-not $schwabOk) {
     1..3 | ForEach-Object {
-        Log "!!! SCHWAB DATA ACCESS FAILED — THE DESK IS BLIND UNTIL RE-AUTH !!!"
+        Log "!!! SCHWAB DATA ACCESS FAILED - THE DESK IS BLIND UNTIL RE-AUTH !!!"
     }
     Log "!!! Fix now: dashboard :8899 -> Schwab connection -> weekly login !!!"
 }
